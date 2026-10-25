@@ -14,17 +14,24 @@ from cricket import predict, stats
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Path(os.environ.get("CRICKET_DB", ROOT / "data" / "tests.duckdb"))
-DB_MAX_AGE_HOURS = 24  # with CRICKET_DB_URL set, fetch the nightly build once the copy is older
+DB_MAX_AGE_HOURS = 24  # fetch the nightly build once the local copy is older than this
+# The nightly workflow publishes here; override with CRICKET_DB_URL (env or Streamlit secret)
+DEFAULT_DB_URL = ("https://github.com/camvpereira-netizen/test-cricket-stats/releases/download/"
+                  "data-latest/tests.duckdb")
 
 
 def _db_url() -> str | None:
-    """Where the nightly build is published (a GitHub release file), from env or Streamlit secrets."""
+    """Where to fetch the database from. None when CRICKET_DB points at a local file to use as is."""
     if url := os.environ.get("CRICKET_DB_URL"):
         return url
     try:
-        return st.secrets.get("CRICKET_DB_URL")
-    except Exception:  # no secrets file
-        return None
+        if url := st.secrets.get("CRICKET_DB_URL"):
+            return url
+    except FileNotFoundError:  # no secrets file
+        pass
+    except Exception as e:  # a secrets file that does not parse
+        st.warning(f"Could not read the app's secrets ({e}); using the default data link.")
+    return None if "CRICKET_DB" in os.environ else DEFAULT_DB_URL
 
 
 def download_db(url: str, dest: Path) -> None:

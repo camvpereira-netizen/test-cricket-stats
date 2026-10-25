@@ -41,13 +41,14 @@ Pages sit in a menu along the top. Each page is a file in `app_pages/` that call
   are cached between runs; current season pages are fetched again), fails without publishing
   if fewer than `MIN_TESTS` Tests come out, and otherwise uploads `tests.duckdb` to the
   `data-latest` release. Raise `MIN_TESTS` when new Tests are added.
-- The app fetches that file when `CRICKET_DB_URL` is set (environment variable or Streamlit
-  secret) and its copy is missing or over 24 hours old:
-  `https://github.com/<owner>/<repo>/releases/download/data-latest/tests.duckdb`.
+- The app fetches that file when its copy is missing or over 24 hours old, from this repo's
+  release by default (`DEFAULT_DB_URL` in `ui/common.py`), or from `CRICKET_DB_URL` (environment
+  variable or Streamlit secret) if set. Setting `CRICKET_DB` to a local file turns fetching off
+  unless `CRICKET_DB_URL` is also set.
   This works for a public repo; a private repo's release files need a token, which the app
   does not handle yet.
 - Deploy on Streamlit Community Cloud: New app, pick the repo, branch `main`, main file
-  `app.py`, then add `CRICKET_DB_URL` under Advanced settings, Secrets.
+  `app.py`. No secrets are needed.
 - GitHub turns off scheduled workflows in a public repo after 60 days with no repository
   activity; re-enable it from the Actions tab if that happens.
 
