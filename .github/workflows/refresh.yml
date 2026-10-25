@@ -1,0 +1,50 @@
+name: Nightly data refresh
+
+# Rebuilds data/tests.duckdb from Cricsheet and Wikipedia and publishes it as the file
+# tests.duckdb on the "data-latest" release, which the web app downloads.
+on:
+  schedule:
+    - cron: "0 18 * * *"  # 18:00 UTC = 4am AEST / 5am AEDT, after most days' play has finished
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to update the release
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MIN_TESTS: "2627"  # the build fails, and nothing is published, if fewer Tests come out
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+      # Old season pages never change, so keep them between runs; current seasons are
+      # fetched again by the code when their copy is over 12 hours old.
+      - uses: actions/cache@v4
+        with:
+          path: data/raw/wikipedia
+          key: wikipedia-${{ github.run_id }}
+          restore-keys: wikipedia-
+
+      - name: Build database
+        run: PYTHONPATH=src python -m cricket.ingest --wikipedia --min-tests "$MIN_TESTS"
+
+      - name: Publish to the data-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view data-latest >/dev/null 2>&1 || \
+            gh release create data-latest --title "Latest data" --latest=false \
+              --notes "Rebuilt nightly. Data from Cricsheet (ODC-BY 1.0) and Wikipedia (CC BY-SA 4.0)."
+          gh release upload data-latest data/tests.duckdb --clobber

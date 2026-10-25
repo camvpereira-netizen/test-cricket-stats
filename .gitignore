@@ -1,0 +1,13 @@
+# Built data: published by the nightly workflow as a release file, never committed
+data/
+*.duckdb
+*.download
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Local Streamlit secrets
+.streamlit/secrets.toml

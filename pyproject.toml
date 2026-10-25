@@ -1,0 +1,9 @@
+[project]
+name = "test-cricket-stats"
+version = "0.4.0"
+description = "Search, compare and predict men's Test cricket from open data"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
