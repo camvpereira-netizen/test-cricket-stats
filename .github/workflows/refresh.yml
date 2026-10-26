@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      MIN_TESTS: "2627"  # the build fails, and nothing is published, if fewer Tests come out
+      MIN_TESTS: "2638"  # the build fails, and nothing is published, if fewer Tests come out
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -72,6 +72,87 @@ def test_clean_drops_pre_status_and_renumbers_duplicates():
     assert df.set_index("test_no").loc[21, "start_date"] == date(1929, 6, 29)
 
 
+GAPS = """
+=== Pakistan in Zimbabwe ===
+{| class="wikitable"
+! colspan="6"|Test series
+|-
+| 1st Test || 9–12 November || [[Alistair Campbell]] || [[Waqar Younis]] || [[Harare Sports Club]], [[Harare]] || {{cr|PAK}} by 119 runs
+|}
+=== Pakistan in New Zealand ===
+{| class="wikitable"
+! colspan="6"|ODI series
+|-
+| [https://example.org/a ODI 786] || 28 December || [[Martin Crowe]] || [[Javed Miandad]] || [[Eden Park]], [[Auckland]] || {{cr|PAK}} by 5 wickets
+|-
+! colspan="6"|One-off Test
+|-
+| [https://example.org/b ODI 1207] || 2–5 January || [[Ken Rutherford]] || [[Javed Miandad]] || [[Seddon Park]], [[Hamilton]] || {{cr|PAK}} by 33 runs
+|}
+=== England women in Australia ===
+{| class="wikitable"
+|-
+| 1st Test || 9–12 November || [[A]] || [[B]] || [[WACA]], [[Perth]] || Match drawn
+|}
+=== World Test Championship final ===
+{| class="wikitable"
+|-
+| [https://example.org/c Test 2585] || 11–15 June || {{cr|SA}} || {{cr|AUS}} || [[Lord's]], [[London]] || {{cr|SA}} by 5 wickets
+|}
+"""
+
+
+def test_parse_unnumbered_tests_and_finals():
+    rows = wp.parse_season(GAPS, "International cricket in 2002–03")
+    # "1st Test", and the Test listed as "ODI 1207" under its Test heading, come back unnumbered;
+    # the ODI and the women's Test are left out
+    assert [(r["test_no"], r["team1"], r["team2"]) for r in rows] == [
+        (None, "Zimbabwe", "Pakistan"), (None, "New Zealand", "Pakistan"),
+        (2585, "South Africa", "Australia")]
+    assert rows[0]["start_date"] == date(2002, 11, 9) and rows[1]["start_date"] == date(2003, 1, 2)
+
+
+def test_clean_fills_gaps_from_unnumbered_and_mislabelled_rows():
+    base = {"home_captain": "a", "away_captain": "b", "venue": "V", "city": None,
+            "result_text": "Match drawn", "source": "wikipedia", "detail": "result", "season_page": "x"}
+
+    def row(no, when, t1, t2):
+        return {**base, "test_no": no, "start_date": when, "team1": t1, "team2": t2}
+    raw = pd.DataFrame([
+        row(100, date(2002, 11, 7), "Australia", "England"),
+        row(None, date(2002, 11, 9), "Zimbabwe", "Pakistan"),    # 1st Test, no number
+        row(None, date(2002, 11, 8), "South Africa", "Sri Lanka"),
+        row(None, date(2002, 11, 7), "England", "Australia"),    # Test 100 again, unnumbered
+        row(103, date(2002, 11, 21), "Australia", "England"),
+        row(104, date(2002, 12, 1), "India", "West Indies"),
+        row(104, date(2001, 3, 1), "India", "Australia"),        # typo: really Test 105
+        row(106, date(2002, 12, 12), "New Zealand", "India"),
+        row(200, date(2003, 6, 1), "England", "Zimbabwe"),
+        row(None, date(2003, 1, 1), "Bangladesh", "West Indies"),  # two candidates, one gap each
+        row(None, date(2003, 2, 1), "Bangladesh", "West Indies"),  # side: 107-199 is left alone
+    ])
+    df = wp.clean(raw).set_index("test_no")
+    assert df.loc[101, "team1"] == "South Africa" and df.loc[102, "team1"] == "Zimbabwe"  # date order
+    assert df.loc[104, "team2"] == "West Indies"  # the number's date fits the neighbours
+    assert 105 not in df.index  # 2001 date doesn't fit between 104 and 106, so it isn't guessed
+    assert list(df.index) == [100, 101, 102, 103, 104, 106, 200]
+    assert list(df[df.test_no_inferred].index) == [101, 102]
+
+
+def test_clean_moves_a_misnumbered_test_into_the_gap_it_fits():
+    base = {"home_captain": "a", "away_captain": "b", "venue": "V", "city": None,
+            "result_text": "Match drawn", "source": "wikipedia", "detail": "result", "season_page": "x"}
+    raw = pd.DataFrame([
+        {**base, "test_no": n, "start_date": d, "team1": "India", "team2": t}
+        for n, d, t in [(859, date(1979, 10, 26), "Australia"), (886, date(1979, 11, 3), "Australia"),
+                        (861, date(1979, 11, 21), "Pakistan"), (885, date(1980, 8, 28), "England"),
+                        (886, date(1980, 11, 24), "Pakistan"), (887, date(1980, 11, 28), "New Zealand")]
+    ])
+    df = wp.clean(raw).set_index("test_no")
+    assert df.loc[860, "start_date"] == date(1979, 11, 3)   # "Test 886" in 1979 was Test 860
+    assert df.loc[886, "start_date"] == date(1980, 11, 24)
+
+
 def test_captain_fills_home_side_at_neutral_host():
     base = {"venue": "Dubai International Cricket Stadium", "city": "Dubai", "result_text": "Match drawn",
             "source": "wikipedia", "detail": "result", "season_page": "x", "start_date": date(2018, 10, 7)}
@@ -158,3 +239,4 @@ def test_coverage(mixed):
     cov = scorecards.coverage(con).set_index(["decade", "detail"]).matches
     assert cov[("1950s", "result")] == 1 and cov[("1950s", "scorecard")] == 1
     assert cov[("2020s", "ball_by_ball")] == 2
+

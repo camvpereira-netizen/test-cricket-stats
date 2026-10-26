@@ -96,15 +96,18 @@ Background: Allsopp & Clarke (2004, JRSS A) on team ratings and home advantage i
 Akhtar & Scarf (2012, Int. J. Forecasting) on multinomial win/draw/loss forecasts in play;
 Scarf, Shi & Akhtar (2011, JRSS A) on negative binomial distributions of Test innings scores.
 
-## What the database holds (built 25 Oct 2026)
+## What the database holds (built 26 Oct 2026)
 
 | Detail | Tests | Span | Source | What works |
 |---|---|---|---|---|
-| Ball-by-ball | 896 | Dec 2001 to Oct 2026 | Cricsheet | Everything |
-| Result only | 1,731 | Mar 1877 to Oct 2026 | Wikipedia season pages | Team records, head-to-head, match-result model |
+| Ball-by-ball | 897 | Dec 2001 to Oct 2026 | Cricsheet | Everything |
+| Result only | 1,741 | Mar 1877 to Oct 2026 | Wikipedia season pages | Team records, head-to-head, match-result model |
 
-That is 2,627 of the 2,638 Tests numbered up to 18 Oct 2026. The 11 missing (Tests 860, 1207,
-1591, 1624–1627, 1630, 1632, 1792, 2585) are not listed on any season page. The Wikipedia layer was checked
+That is all 2,638 Tests numbered up to 18 Oct 2026. Season pages list a few Tests without a
+number ("1st Test"), with a typo ("Test 886" for 860, "ODI 1207" under a Test heading) or with
+another Test's number; `wikipedia.clean` gives each the missing number its date fits
+(`test_no_inferred` marks them). Test 1591 (India v Zimbabwe, Delhi, 2002) carries its page's
+wrong start date, 21 Feb, in place of 28 Feb. The Wikipedia layer was checked
 two ways: on the 895 Tests it shares with Cricsheet the result agrees in 894 (the other is the
 2009 Lahore Test abandoned after the attack on Sri Lanka's bus: Cricsheet says draw, Wikipedia
 "no result"), and on England's 1,019 Tests it agrees with England's separately edited results

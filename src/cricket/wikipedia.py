@@ -236,28 +236,53 @@ def _split_single_pipes(cells: list[str]) -> list[str]:
     return out + [cur]
 
 
+# Rows labelled "1st Test", "Only Test" and so on carry no Test number; `clean` gives them one
+ORDINAL_TEST = re.compile(r"^(?:\d+(?:st|nd|rd|th)|only|one-off|sole|first|second|third|fourth|fifth)\s+test\b", re.I)
+NOT_MEN_TESTS = re.compile(r"women|youth|under-?\d+|\bU-?19\b|\bA team\b|\bXI\b(?<!World XI)", re.I)
+
+
 def parse_season(text: str, title: str) -> list[dict]:
     """Every Test listed on one season page.
 
     Teams come from the section heading ('England in Australia'). Where the heading names
     a host that has no Test side ('Australia in the United Arab Emirates'), team1 is left
     None and `resolve_teams` fills it in from the home captain.
+
+    Rows without a Test number ('1st Test', or a Test listed as 'ODI 1207' under a Test
+    sub-heading) come back with test_no None; `clean` numbers the ones that fill a gap.
     """
     season = title.rsplit(" ", 1)[-1]
     out = []
+    sub, section = "", None  # sub: the table's sub-heading row, e.g. "Test series" or "ODI series"
     for heading, cells in _rows(text):
+        if heading != section:
+            sub, section = "", heading
+        if len(cells) == 1 and cells[0].lstrip().startswith(("colspan", "style")):
+            sub = _strip(cells[0])
+            continue
         cells = _split_single_pipes(cells)
         if len(cells) < 4 or (len(cells) < 6 and "]], [[" not in cells[2]):
             continue
+        if NOT_MEN_TESTS.search(heading) or NOT_MEN_TESTS.search(sub):
+            continue
+        label = _strip(cells[0])
         # "Test 2351a"-style numbers mark matches abandoned or cancelled without being Tests
-        num = re.search(r"Test\s*(?:no\.?:?\s*)?(\d{1,4})(?![\dA-Za-z])", _strip(cells[0]), re.I)
-        if not num:
+        num = re.search(r"Test\s*(?:no\.?:?\s*)?(\d{1,4})(?![\dA-Za-z])", label, re.I)
+        if num:
+            test_no = int(num.group(1))
+        elif ORDINAL_TEST.match(label) or (re.fullmatch(r"ODI\s*\d{1,4}", label) and "Test" in sub):
+            test_no = None
+        else:
             continue
         plain = [_strip(c) for c in cells]
         if len(plain) >= 8 and _team(plain[2]) and _team(plain[4]):
             # tournament layout: No, Date, Team 1, Captain 1, Team 2, Captain 2, Venue, Result
             home, away = _team(plain[2]), _team(plain[4])
             caps, venue, result = (plain[3], plain[5]), plain[6], plain[7]
+        elif len(plain) >= 6 and _team(plain[2]) and _team(plain[3]):
+            # one-off final: No, Date, Team 1, Team 2, Venue, Result
+            home, away = _team(plain[2]), _team(plain[3])
+            caps, venue, result = (None, None), plain[4], plain[5]
         elif len(plain) >= 6:
             home, away = _teams_from_heading(heading)
             caps, venue, result = (plain[2], plain[3]), plain[4], plain[5]
@@ -268,7 +293,7 @@ def parse_season(text: str, title: str) -> list[dict]:
             continue
         city = venue.split(",", 1)[1].strip() if "," in venue else None
         out.append({
-            "match_id": f"wp{int(num.group(1))}", "test_no": int(num.group(1)),
+            "match_id": f"wp{test_no}" if test_no else None, "test_no": test_no,
             "start_date": _start_date(plain[1], season), "team1": home, "team2": away,
             "venue": venue.split(",", 1)[0].strip(), "city": city,
             "home_captain": caps[0], "away_captain": caps[1], "result_text": result,
@@ -320,30 +345,117 @@ def _date_suspect(df: pd.DataFrame, slack_days: int = 30) -> pd.Series:
     return ((d < before - slack) | (d > after + slack)).reindex(df.index)
 
 
+def _fits(row, others: pd.DataFrame, slack_days: int = 30) -> bool:
+    """Whether a row's date sits between the Tests numbered just below and above it."""
+    d, slack = pd.Timestamp(row.start_date), pd.Timedelta(days=slack_days)
+    below = others[others.test_no < row.test_no]
+    above = others[others.test_no > row.test_no]
+    lo = pd.Timestamp(below.loc[below.test_no.idxmax(), "start_date"]) if len(below) else None
+    hi = pd.Timestamp(above.loc[above.test_no.idxmin(), "start_date"]) if len(above) else None
+    return (lo is None or d >= lo - slack) and (hi is None or d <= hi + slack)
+
+
+def _listed(pool: pd.DataFrame, numbered: pd.DataFrame, days: int = 3) -> pd.Series:
+    """True for pool rows already among the numbered ones (same two teams, start within days).
+
+    A row that lost a shared number must also differ in venue: two Tests of one series can
+    carry the same mistyped number and date (Nagpur and Delhi, both "Test 1589").
+    """
+    by_pair: dict[frozenset, list] = {}
+    for r in numbered.itertuples():
+        by_pair.setdefault(frozenset((r.team1, r.team2)), []).append((pd.Timestamp(r.start_date), r.venue))
+    return pd.Series([any(abs((pd.Timestamp(p.start_date) - d).days) <= days
+                          and not (p.spare and p.venue != venue)
+                          for d, venue in by_pair.get(frozenset((p.team1, p.team2)), []))
+                      for p in pool.itertuples()], index=pool.index, dtype=bool)
+
+
+def fill_gaps(df: pd.DataFrame, slack_days: int = 3) -> tuple[pd.DataFrame, list[int]]:
+    """Number unnumbered rows (test_no None) that fill a gap in the numbering.
+
+    Each run of missing numbers lies between two numbered Tests; the unnumbered rows dated
+    between those two (give or take slack_days) and not already listed are its candidates.
+    When there are exactly as many candidates as missing numbers, they take the numbers in
+    date order (page order on the same date). Returns the numbered rows and the numbers filled.
+    """
+    df = df if "spare" in df else df.assign(spare=False)
+    numbered = df[df.test_no.notna()].copy()
+    pool = df[df.test_no.isna()].copy()
+    pool = pool[~_listed(pool, numbered)]
+    pool = pool.drop_duplicates(["start_date", "team1", "team2", "venue"])
+    nums = sorted(int(n) for n in numbered.test_no)
+    dates = numbered.set_index(numbered.test_no.astype(int)).start_date
+    filled = []
+    slack = pd.Timedelta(days=slack_days)
+    for lo, hi in zip(nums, nums[1:]):
+        run = list(range(lo + 1, hi))
+        if not run:
+            continue
+        start, end = pd.Timestamp(dates[lo]), pd.Timestamp(dates[hi])
+        when = pd.to_datetime(pool.start_date)
+        cand = pool[(when >= start - slack) & (when <= end + slack)].sort_values(["start_date", "row_order"])
+        if len(cand) != len(run):
+            continue
+        cand = cand.assign(test_no=run)
+        numbered = pd.concat([numbered, cand])
+        pool = pool.drop(cand.index)
+        filled += run
+    return numbered, filled
+
+
 def clean(raw: pd.DataFrame) -> pd.DataFrame:
     """Repair the mistakes season pages are known to contain, and flag dates that look wrong.
 
     - drop "Tests" before a side had Test status (e.g. 1914 New Zealand v Australia)
     - the same match listed on two pages: keep one
-    - two different matches given one number with the next number unused: renumber in date order
+    - two matches given one number next to an unused one: they take both, in date order
+    - otherwise, of matches sharing a number keep the one whose date fits the numbers around
+      it (the first listed if both fit); the others join the unnumbered rows
+    - unnumbered rows ("1st Test") take the missing numbers they fit, see `fill_gaps`
     - a date out of step with the Test numbers around it is kept but marked date_suspect
     """
+    raw = raw.copy()
+    if "row_order" not in raw:
+        raw["row_order"] = range(len(raw))
     raw = resolve_teams(raw)
     # fixtures listed before they are played have no result yet
     raw = raw[~((pd.to_datetime(raw.start_date) > pd.Timestamp.today()) & raw.winner.isna() & raw.result.isna())]
     df = raw[raw.apply(lambda r: r.start_date is not None and all(
         r.start_date >= TEST_DEBUT.get(t, date.max) for t in (r.team1, r.team2)), axis=1)]
-    df = df.drop_duplicates(["test_no", "start_date", "team1", "team2"])
-    df = df.sort_values(["test_no", "start_date"]).reset_index(drop=True)
-    used = set(df.test_no)
-    for i in range(1, len(df)):
-        if df.at[i, "test_no"] == df.at[i - 1, "test_no"] and df.at[i, "test_no"] + 1 not in used:
-            df.at[i, "test_no"] += 1
-            used.add(df.at[i, "test_no"])
-    df = df.drop_duplicates("test_no").sort_values("test_no").reset_index(drop=True)
+    df = df.drop_duplicates(["test_no", "start_date", "team1", "team2", "venue"])
+    df = df.sort_values(["test_no", "row_order"]).reset_index(drop=True)
+    numbered = df[df.test_no.notna()]
+    used = set(numbered.test_no)
+    keep, spare, moved = [], [], []
+    for n, grp in numbered.groupby("test_no", sort=False):
+        if len(grp) == 1:
+            keep.append(grp.index[0])
+            continue
+        others = numbered.drop(grp.index)
+        fit = [i for i in grp.index if _fits(grp.loc[i], others)]
+        if len(grp) == 2 and len(fit) == 2 and (n - 1 not in used or n + 1 not in used):
+            # a neighbouring number is free: the pair takes both, in date order
+            early, late = grp.sort_values(["start_date", "row_order"]).index
+            below_is_gap = n - 1 not in used and n - 2 in used
+            free = n - 1 if below_is_gap or n + 1 in used else n + 1
+            df.at[early if free < n else late, "test_no"] = free
+            used.add(free)
+            moved.append(free)
+            keep += [early, late]
+            continue
+        first = (fit or list(grp.index))[0]
+        keep.append(first)
+        spare += [i for i in grp.index if i != first]
+    df["spare"] = df.index.isin(spare)
+    df.loc[spare, "test_no"] = None
+    df = df.loc[keep + spare + list(df.index[df.test_no.isna() & ~df.index.isin(spare)])]
+    df, filled = fill_gaps(df)
+    filled += moved
+    df = df.astype({"test_no": int}).sort_values("test_no").reset_index(drop=True)
+    df["test_no_inferred"] = df.test_no.isin(filled)
     df["date_suspect"] = _date_suspect(df)
     df["match_id"] = "wp" + df.test_no.astype(str)
-    return df
+    return df.drop(columns=["row_order", "spare"])
 
 
 def all_tests(first: int = FIRST_SEASON, last: int = LAST_SEASON) -> pd.DataFrame:
@@ -353,7 +465,11 @@ def all_tests(first: int = FIRST_SEASON, last: int = LAST_SEASON) -> pd.DataFram
         text = wikitext(title, max_age_hours=RECENT_MAX_AGE_HOURS if title in recent else None)
         if text:
             rows += parse_season(text, title)
-    return clean(pd.DataFrame(rows)) if rows else pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    raw = pd.DataFrame(rows)
+    raw["row_order"] = range(len(raw))  # breaks ties between same-day unnumbered Tests
+    return clean(raw)
 
 
 def _full_date(text: str) -> date | None:
