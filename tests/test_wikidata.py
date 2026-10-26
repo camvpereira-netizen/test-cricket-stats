@@ -42,3 +42,24 @@ def test_add_full_names_fills_gaps_only(tmp_path, monkeypatch, _scon):
     assert stats.find_players(c, "marnus").full_name.iloc[0] == "Marnus Labuschagne"
     assert stats.find_players(c, "steve smith").full_name.iloc[0] == "Steve Smith"  # register first
     c.close()
+
+
+def test_list_only_players_get_names_by_article(tmp_path, monkeypatch, _scon):
+    db = _scon.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0]
+    copy = tmp_path / "copy.duckdb"
+    copy.write_bytes(open(db, "rb").read())
+    c = duckdb.connect(str(copy))
+    c.execute("""CREATE TABLE player_careers AS SELECT * FROM (VALUES
+                 ('wp:australia:124', 'Don Bradman', 'Don Bradman', 'Australia', 52, 1928, 1948))
+                 t(player_id, name, wiki_title, team, matches, first_year, last_year)""")
+    monkeypatch.setattr(wikidata, "fetch_names_by_title", lambda titles: pd.DataFrame(
+        [{"wiki_title": "Don Bradman", "label": "Don Bradman", "birth_name": "Donald George Bradman"}]))
+    assert wikidata.add_list_names(c) == 2
+    assert stats.find_players(c, "donald bradman").full_name.iloc[0] == "Donald George Bradman"
+    c.close()
+
+
+def test_article_iri_is_percent_encoded():
+    assert wikidata._article_iri("Jack Board (cricketer)") == \
+        "<https://en.wikipedia.org/wiki/Jack_Board_%28cricketer%29>"
+    assert ">" not in wikidata._article_iri("a> } DROP")[1:-1]

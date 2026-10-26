@@ -270,18 +270,15 @@ def main() -> None:
     zip_path = args.zip or download(args.url)
     counts = build_db(zip_path, args.db)
     print(f"Built {args.db}: " + ", ".join(f"{k}={v:,}" for k, v in counts.items()))
+    has_names = False
     try:
         names_csv = download(NAMES_URL)
     except requests.RequestException as e:  # search still works on Cricsheet names alone
         print(f"Player names not loaded: {e}")
     else:
+        has_names = True
         con = duckdb.connect(str(args.db))
         print(f"Player names: {load_player_names(con, names_csv):,}")
-        try:  # full names for players the register knows only by initials
-            from cricket import wikidata
-            print(f"Wikidata names: {wikidata.add_full_names(con, download(wikidata.PEOPLE_URL)):,}")
-        except requests.RequestException as e:
-            print(f"Wikidata names not loaded: {e}")
         con.close()
     if args.wikipedia:
         from cricket import scorecards, wikipedia
@@ -292,6 +289,28 @@ def main() -> None:
         print("Wikipedia: " + ", ".join(f"{k}={v:,}" for k, v in added.items()))
         print("Checks: " + ", ".join(f"{k}={len(v) if isinstance(v, list) else v}"
                                      for k, v in {**report, **wikipedia.check(tests)}.items()))
+        from cricket import careers
+        try:
+            people = pd.read_csv(download(careers.PEOPLE_URL), dtype=str)
+        except requests.RequestException as e:  # still linked by team, surname and years
+            print(f"People register not loaded: {e}")
+            people = None
+        con = duckdb.connect(str(args.db))
+        linked = careers.link_players(con, careers.all_careers(), people)
+        print(f"Career totals: {careers.load(con, linked):,} rows, "
+              f"{(~linked.player_id.str.startswith('wp:')).sum():,} linked to players in the matches")
+        con.close()
+    if has_names:
+        con = duckdb.connect(str(args.db))
+        try:  # full names for players the register knows only by initials, and list-only players
+            from cricket import wikidata
+            added = wikidata.add_full_names(con, download(wikidata.PEOPLE_URL))
+            if args.wikipedia:
+                added += wikidata.add_list_names(con)
+            print(f"Wikidata names: {added:,}")
+        except requests.RequestException as e:
+            print(f"Wikidata names not loaded: {e}")
+        con.close()
     info = write_build_info(args.db)
     print("Build: " + ", ".join(f"{k}={v}" for k, v in info.items()))
     if info["tests"] < args.min_tests:

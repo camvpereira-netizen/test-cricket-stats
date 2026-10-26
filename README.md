@@ -133,6 +133,18 @@ Tests), because draws were far more common before the 1990s.
 | Batter's next innings (6,562 innings) | 21.8 runs average error | 22.5 (position average) |
 | Bowler's next innings (3,516 innings) | 1.21 wickets average error | 1.32 (everyone's average) |
 
+## Every player's career (Wikipedia lists)
+
+`careers.py` reads Wikipedia's twelve "List of <team> Test cricketers" pages: 3,287 rows, one
+per player per team, every man capped from 1877 on, with matches, runs, highest score,
+averages, wickets, best bowling, catches and stumpings. 1,046 are linked to the players in the
+matches (by the ESPNcricinfo id the page cites, checked against the surname, then by team,
+surname and years); the rest get ids like `wp:australia:124`. Search, the Player page, Compare
+and the "All-time careers" leaderboard use them. Checked by hand: Bradman 52 Tests, 6,996
+runs at 99.94; Tendulkar 15,921; Muralitharan 795 wickets for Sri Lanka (800 with his World XI
+Test). Each list states the date it is correct to (June 2025 to October 2026), so players who
+made their debut since are only in the scorecard data, and a player's totals are per team.
+
 ## Known limits
 
 - Player stats cover only ball-by-ball (and any future scorecard) Tests, so careers before 2002

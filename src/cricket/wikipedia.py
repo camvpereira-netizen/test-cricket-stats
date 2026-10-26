@@ -27,7 +27,8 @@ from cricket.venues import home_team, host_country
 ATTRIBUTION = "Match results for Tests outside Cricsheet from Wikipedia, CC BY-SA 4.0"
 ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data" / "raw" / "wikipedia"
-USER_AGENT = "TestCricketStats/0.1 (personal non-commercial research tool)"
+USER_AGENT = ("TestCricketStats/0.1 (personal non-commercial research tool; "
+              "https://github.com/camvpereira-netizen/test-cricket-stats)")
 FIRST_SEASON, LAST_SEASON = 1876, date.today().year
 RECENT_MAX_AGE_HOURS = 12  # pages for current seasons are fetched again after this, so new results arrive
 

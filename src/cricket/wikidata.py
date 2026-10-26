@@ -1,4 +1,5 @@
-"""Players' full names from Wikidata, for players the Cricsheet register gives only initials.
+"""Players' full names from Wikidata, for players the Cricsheet register gives only initials
+and for players known only from Wikipedia's lists of Test cricketers (found by their article).
 
 Cricsheet's People Register (people.csv) gives each player's ESPNcricinfo id; Wikidata
 items carry the same id as property P2697, so one query per batch of ids returns the
@@ -9,15 +10,16 @@ Licence: Wikidata's data is CC0 (public domain dedication), so no attribution is
 """
 from __future__ import annotations
 
+import urllib.parse
 from pathlib import Path
 
 import pandas as pd
 import requests
 
+from cricket.careers import PEOPLE_URL  # noqa: F401  (Cricsheet register with other sites' ids)
+from cricket.wikipedia import USER_AGENT
+
 SPARQL_URL = "https://query.wikidata.org/sparql"
-PEOPLE_URL = "https://cricsheet.org/register/people.csv"  # register ids with other sites' keys (ODC-BY)
-USER_AGENT = ("TestCricketStats/0.1 (personal non-commercial research tool; "
-              "https://github.com/camvpereira-netizen/test-cricket-stats)")
 BATCH = 200
 
 QUERY = """SELECT ?cid ?label ?birth WHERE {
@@ -42,6 +44,46 @@ def fetch_names(cricinfo_ids: list[str]) -> pd.DataFrame:
             rows.append({"cricinfo_id": b["cid"]["value"], "label": b.get("label", {}).get("value"),
                          "birth_name": b.get("birth", {}).get("value")})
     return pd.DataFrame(rows, columns=["cricinfo_id", "label", "birth_name"])
+
+
+TITLE_QUERY = """SELECT ?article ?label ?birth WHERE {
+  VALUES ?article { %s }
+  ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> .
+  OPTIONAL { ?item rdfs:label ?label FILTER(lang(?label) = "en") }
+  OPTIONAL { ?item wdt:P1477 ?birth FILTER(lang(?birth) = "en") }
+}"""
+
+
+def _article_iri(title: str) -> str:
+    return "<https://en.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_"), safe="") + ">"
+
+
+def fetch_names_by_title(titles: list[str]) -> pd.DataFrame:
+    """wiki_title, label, birth_name for English Wikipedia articles Wikidata links to an item."""
+    rows = []
+    titles = sorted({t for t in titles if t})
+    by_iri = {_article_iri(t)[1:-1]: t for t in titles}
+    for start in range(0, len(titles), BATCH):
+        values = " ".join(_article_iri(t) for t in titles[start:start + BATCH])  # percent-encoded
+        r = requests.post(SPARQL_URL, data={"query": TITLE_QUERY % values},
+                          headers={"User-Agent": USER_AGENT,
+                                   "Accept": "application/sparql-results+json"}, timeout=60)
+        r.raise_for_status()
+        for b in r.json()["results"]["bindings"]:
+            rows.append({"wiki_title": by_iri.get(b["article"]["value"]),
+                         "label": b.get("label", {}).get("value"),
+                         "birth_name": b.get("birth", {}).get("value")})
+    return pd.DataFrame(rows, columns=["wiki_title", "label", "birth_name"])
+
+
+def add_list_names(con) -> int:
+    """Full names for players known only from Wikipedia's lists (pre-2001), by their article."""
+    players = con.execute("""SELECT DISTINCT player_id, wiki_title FROM player_careers
+                             WHERE player_id LIKE 'wp:%'""").df()
+    found = players.merge(fetch_names_by_title(players.wiki_title.tolist()), on="wiki_title")
+    names = pd.concat([found[["player_id", "label"]].set_axis(["player_id", "name"], axis=1),
+                       found[["player_id", "birth_name"]].set_axis(["player_id", "name"], axis=1)])
+    return insert_names(con, names.dropna().drop_duplicates().reset_index(drop=True))
 
 
 def names_for_register(people: pd.DataFrame, wanted: set[str], found: pd.DataFrame) -> pd.DataFrame:

@@ -78,16 +78,34 @@ def find_players(con, query: str, limit: int = 20, min_score: float = 0.85) -> p
     if not q:
         return pd.DataFrame(columns=["player_id", "player", "full_name", "team", "matches",
                                      "first_year", "last_year", "score"])
-    has_names = con.execute("SELECT count(*) FROM information_schema.tables "
-                            "WHERE table_name = 'player_names'").fetchone()[0]
+    has_names = _has_table(con, "player_names")
+    has_careers = _has_table(con, "player_careers")
     register = "UNION ALL SELECT player_id, name FROM player_names" if has_names else ""
+    if has_careers:
+        register += " UNION ALL SELECT player_id, name FROM player_careers"
     # first register name with a full first name matching one of the initials and the same
     # surname; the register also keeps other sources' mistakes (J Overton as "Craig Overton")
     full_name = """(SELECT name FROM player_names n WHERE n.player_id = p.player_id
-                    AND regexp_matches(name, '^[^ .]{2,} ')
+                    AND regexp_matches(name, '^[^ .]{2,} ') AND name <> p.player
                     AND contains(split_part(p.player, ' ', 1), name[1])
                     AND split_part(name, ' ', -1) = split_part(p.player, ' ', -1)
                     ORDER BY position LIMIT 1)""" if has_names else "NULL"
+    if has_careers:  # else the name on Wikipedia's list of the player's team, if it differs
+        full_name = f"""coalesce({full_name}, (SELECT any_value(c.name) FROM player_careers c
+                        WHERE c.player_id = p.player_id AND c.name <> p.player))"""
+    careers = """
+        UNION ALL
+        SELECT player_id, any_value(name), string_agg(DISTINCT team, ' / '), sum(matches)::BIGINT,
+               min(first_year), max(last_year)
+        FROM player_careers
+        WHERE player_id IN (SELECT player_id FROM best WHERE score >= $min_score)
+          AND player_id NOT IN (SELECT player_id FROM appearances WHERE player_id IS NOT NULL)
+        GROUP BY player_id""" if has_careers else ""
+    # whole-career matches and span from the lists where known, else from the matches here
+    career_totals = """LEFT JOIN (SELECT player_id, sum(matches) AS matches, min(first_year) AS first_year,
+                                  max(last_year) AS last_year FROM player_careers GROUP BY player_id) c
+                       USING (player_id)""" if has_careers else ""
+    pick = (lambda col, fn: f"{fn}(p.{col}, c.{col})") if has_careers else (lambda col, fn: f"p.{col}")
     return con.execute(
         f"""
         WITH names AS (
@@ -121,15 +139,72 @@ def find_players(con, query: str, limit: int = 20, min_score: float = 0.85) -> p
             FROM appearances a JOIN matches m USING (match_id)
             WHERE a.player_id IN (SELECT player_id FROM best WHERE score >= $min_score)
             GROUP BY a.player_id
+            {careers}
         )
-        SELECT p.player_id, p.player, {full_name} AS full_name, p.team, p.matches,
-               p.first_year, p.last_year, round(b.score, 3) AS score
-        FROM players p JOIN best b USING (player_id)
+        SELECT p.player_id, p.player, {full_name} AS full_name, p.team,
+               {pick("matches", "greatest")}::BIGINT AS matches, {pick("first_year", "least")} AS first_year,
+               {pick("last_year", "greatest")} AS last_year, round(b.score, 3) AS score
+        FROM players p JOIN best b USING (player_id) {career_totals}
         ORDER BY score DESC, b.closeness DESC NULLS LAST, matches DESC, player
         LIMIT $limit
         """,
         {"q": q, "words": q.split(), "min_score": min_score, "limit": limit},
     ).df()
+
+
+def _has_table(con, name: str) -> bool:
+    return con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = ?",
+                       [name]).fetchall()[0][0] > 0
+
+
+def career_totals(con, player_id: str) -> pd.DataFrame:
+    """Whole-career figures for each team the player was capped by, from Wikipedia's lists.
+
+    These cover every Test, unlike the scorecard stats; columns a list lacks are NULL.
+    """
+    if not _has_table(con, "player_careers"):
+        return pd.DataFrame()
+    return con.execute(
+        """SELECT team, cap, name, first_year, last_year, matches, innings, not_outs, runs,
+                  high_score, batting_average, hundreds, fifties, balls, maidens, runs_conceded,
+                  wickets, best_bowling, bowling_average, catches, stumpings, as_of
+           FROM player_careers WHERE player_id = ? ORDER BY first_year""", [player_id]).df()
+
+
+CAREER_ORDER = {"runs": "runs DESC", "batting_average": "batting_average DESC",
+                "wickets": "wickets DESC", "bowling_average": "bowling_average ASC",
+                "matches": "matches DESC", "catches": "catches DESC"}
+
+
+def career_leaderboard(con, order_by: str = "runs", min_matches: int = 1, min_wickets: int = 0,
+                       limit: int = 50, player_ids: list[str] | None = None) -> pd.DataFrame:
+    """All-time leaders over every Test, from the per-team career totals.
+
+    A player capped by two teams counts once, with runs and wickets added up and averages
+    worked out again from the totals where the lists give the parts.
+    """
+    if order_by not in CAREER_ORDER:
+        raise ValueError(f"order_by must be one of {sorted(CAREER_ORDER)}")
+    if not _has_table(con, "player_careers"):
+        return pd.DataFrame()
+    return con.execute(
+        f"""SELECT player_id, any_value(name) AS player, string_agg(team, ' / ') AS team,
+                   min(first_year) AS first_year, max(last_year) AS last_year,
+                   sum(matches)::INT AS matches, sum(runs)::INT AS runs,
+                   CASE WHEN count(*) = 1 THEN any_value(batting_average)
+                        WHEN bool_and(innings IS NOT NULL AND not_outs IS NOT NULL)
+                        THEN round(sum(runs) / nullif(sum(innings) - sum(not_outs), 0), 2) END
+                       AS batting_average,
+                   sum(wickets)::INT AS wickets,
+                   CASE WHEN count(*) = 1 THEN any_value(bowling_average)
+                        WHEN bool_and(runs_conceded IS NOT NULL OR coalesce(wickets, 0) = 0)
+                        THEN round(sum(runs_conceded) / nullif(sum(wickets), 0), 2) END
+                       AS bowling_average,
+                   sum(catches)::INT AS catches
+            FROM player_careers WHERE ? IS NULL OR list_contains(?, player_id) GROUP BY player_id
+            HAVING sum(matches) >= ? AND coalesce(sum(wickets), 0) >= ? AND {order_by} IS NOT NULL
+            ORDER BY {CAREER_ORDER[order_by]}, matches DESC LIMIT ?""",
+        [player_ids, player_ids, min_matches, min_wickets, limit]).df()
 
 
 def _batting_innings(con, player_id: str, f: Filters) -> pd.DataFrame:
@@ -225,16 +300,30 @@ def bowling_summary(con, player_id: str, f: Filters | None = None) -> dict:
 
 
 def compare(con, player_ids: list[str], f: Filters | None = None) -> pd.DataFrame:
-    """Side-by-side batting + bowling summary for several players (rows = stats)."""
+    """Side-by-side summary for several players (rows = stats).
+
+    career_ rows are whole careers from Wikipedia's lists (filters don't apply); bat_ and
+    bowl_ rows come from the scorecards, which start in 2001.
+    """
     names = dict(con.execute(
         "SELECT DISTINCT player_id, player FROM appearances WHERE player_id IN (SELECT unnest(?))",
         [player_ids],
     ).fetchall())
+    careers = career_leaderboard(con, "matches", limit=len(player_ids), player_ids=player_ids) \
+        if _has_table(con, "player_careers") else pd.DataFrame(columns=["player_id"])
+    careers = careers.set_index("player_id")
     cols = {}
     for pid in player_ids:
+        career = {}
+        if pid in careers.index:
+            r = careers.loc[pid]
+            names.setdefault(pid, r.player)
+            career = {f"career_{k}": (None if pd.isna(r[k]) else r[k]) for k in
+                      ("team", "first_year", "last_year", "matches", "runs", "batting_average",
+                       "wickets", "bowling_average", "catches")}
         bat = {f"bat_{k}": v for k, v in batting_summary(con, pid, f).items()}
         bowl = {f"bowl_{k}": v for k, v in bowling_summary(con, pid, f).items()}
-        cols[names.get(pid, pid)] = {**bat, **bowl}
+        cols[names.get(pid, pid)] = {**career, **bat, **bowl}
     return pd.DataFrame(cols)
 
 
