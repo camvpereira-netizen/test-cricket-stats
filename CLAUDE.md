@@ -26,7 +26,7 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
 - Bowler wickets: bowled, caught, caught and bowled, lbw, stumped, hit wicket only.
 
 ## Layout
-- `src/cricket/ingest.py` — download Cricsheet zip, load into DuckDB tables.
+- `src/cricket/ingest.py` — download Cricsheet zip and People Register `names.csv`, load into DuckDB tables.
 - `src/cricket/venues.py` — city → host nation lookup used by ingest for home/away.
 - `src/cricket/wikipedia.py` — season-page parser, repairs and England cross-check.
 - `src/cricket/scorecards.py` — adds result-only / scorecard-only matches; coverage table.
