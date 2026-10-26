@@ -34,7 +34,19 @@ def player(ctx: Ctx):
     pid = player_picker(ctx.con, "Search player", "one")
     if not pid:
         return
+    career = stats.career_totals(ctx.con, pid)
+    if not career.empty:
+        st.subheader("Whole career")
+        st.dataframe(tidy(career.drop(columns=["name", "as_of"])), hide_index=True, width="stretch")
+        st.caption("Every Test for each team, from Wikipedia's list of that team's Test cricketers "
+                   f"(figures correct as of {', '.join(sorted(set(career.as_of.dropna())))}). "
+                   "Filters don't apply here.")
     f = ctx.filters
+    if not stats.batting_summary(ctx.con, pid)["innings"] and not stats.bowling_summary(ctx.con, pid)["innings_bowled"]:
+        st.info("No scorecards for this player's Tests yet (they start in 2001), so the detailed "
+                "stats and splits below the career totals aren't available.")
+        return
+    st.subheader("From scorecards (2001 on)")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Batting")
@@ -94,7 +106,17 @@ def teams(ctx: Ctx):
 def leaderboards(ctx: Ctx):
     st.title("Leaderboards")
     c1, c2, c3 = st.columns(3)
-    kind = c1.radio("Leaderboard", ["Batting", "Bowling"], horizontal=True)
+    kind = c1.radio("Leaderboard", ["All-time careers", "Batting", "Bowling"], horizontal=True)
+    if kind == "All-time careers":
+        order = c2.selectbox("Sort by", list(stats.CAREER_ORDER))
+        qual = c3.number_input("Minimum Tests", 1, 200, 20 if order.endswith("average") else 1)
+        lb = stats.career_leaderboard(ctx.con, order, int(qual),
+                                      min_wickets=50 if order == "bowling_average" else 0)
+        st.dataframe(tidy(lb), hide_index=True, width="stretch")
+        st.caption("Every Test since 1877, from Wikipedia's lists of each team's Test cricketers; "
+                   "the sidebar filters don't apply. Bowling average needs 50 wickets.")
+        return
+    st.caption("From scorecards, which start in 2001; the filters apply.")
     if kind == "Batting":
         order = c2.selectbox("Sort by", ["runs", "average", "hundreds", "strike_rate"])
         qual = c3.number_input("Minimum innings", 1, 200, 20)
