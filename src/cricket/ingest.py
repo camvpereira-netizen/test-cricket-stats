@@ -277,6 +277,11 @@ def main() -> None:
     else:
         con = duckdb.connect(str(args.db))
         print(f"Player names: {load_player_names(con, names_csv):,}")
+        try:  # full names for players the register knows only by initials
+            from cricket import wikidata
+            print(f"Wikidata names: {wikidata.add_full_names(con, download(wikidata.PEOPLE_URL)):,}")
+        except requests.RequestException as e:
+            print(f"Wikidata names not loaded: {e}")
         con.close()
     if args.wikipedia:
         from cricket import scorecards, wikipedia
