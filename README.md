@@ -149,6 +149,8 @@ Tests), because draws were far more common before the 1990s.
 - Predictions are probabilities, not certainties. Check the Model accuracy page before trusting one.
 - Players are named as Cricsheet names them (e.g. "SPD Smith"). Search also takes full names,
   first names and typos ("steve smith", "stve smith") using the People Register's name variants,
-  which cover about 85% of players; the rest are found by Cricsheet name only. The register
+  which cover about 85% of players. Wikidata (CC0) adds names for the rest where its item
+  carries the player's ESPNcricinfo id from the register (read as an id only; nothing is fetched
+  from ESPNcricinfo). The register
   also keeps a few other sources' mix-ups ("Anderson Cummins" for Pat Cummins), so those
   searches can show an extra player.
