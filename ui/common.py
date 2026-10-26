@@ -120,14 +120,15 @@ def sidebar_filters(c) -> stats.Filters:
 
 
 def player_picker(c, label: str, key: str):
-    q = st.text_input(label, key=f"q_{key}", placeholder="e.g. Smith, Root, Cummins")
+    q = st.text_input(label, key=f"q_{key}", placeholder="e.g. Steve Smith, Root, Cummins")
     if not q:
         return None
     found = stats.find_players(c, q)
     if found.empty:
         st.warning("No players found.")
         return None
-    opts = {f"{r.player} ({r.team}, {r.first_year}–{r.last_year}, {r.matches} Tests)": r.player_id
+    opts = {f"{r.player}{f' – {r.full_name}' if pd.notna(r.full_name) else ''} "
+            f"({r.team}, {r.first_year}–{r.last_year}, {r.matches} Tests)": r.player_id
             for r in found.itertuples()}
     return opts[st.selectbox("Select", list(opts), key=f"s_{key}")]
 

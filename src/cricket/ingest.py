@@ -23,6 +23,7 @@ from cricket.stats import BOWLER_WICKET_KINDS, NOT_DISMISSED_KINDS
 from cricket.venues import home_team, host_country
 
 DEFAULT_URL = "https://cricsheet.org/downloads/tests_male_json.zip"
+NAMES_URL = "https://cricsheet.org/register/names.csv"  # People Register name variants (ODC-BY)
 ROOT = Path(__file__).resolve().parents[2]
 RAW_DIR = ROOT / "data" / "raw"
 DB_PATH = ROOT / "data" / "tests.duckdb"
@@ -173,6 +174,21 @@ def build_db(zip_path: Path, db_path: Path = DB_PATH) -> dict[str, int]:
     return {k: len(v) for k, v in frames.items()}
 
 
+def load_player_names(con, csv_path: Path) -> int:
+    """Store the Cricsheet register's other names ("Steve Smith" for "SPD Smith") for search.
+
+    Keeps only people who appear in the matches; `position` keeps the register's order, so the
+    first full name listed is the one shown beside the Cricsheet name.
+    """
+    names = pd.read_csv(csv_path, dtype=str).rename(columns={"identifier": "player_id"})
+    names["position"] = range(len(names))
+    con.register("tmp_df", names[["player_id", "name", "position"]])
+    con.execute("""CREATE OR REPLACE TABLE player_names AS SELECT * FROM tmp_df
+                   WHERE player_id IN (SELECT player_id FROM appearances)""")
+    con.unregister("tmp_df")
+    return con.execute("SELECT count(*) FROM player_names").fetchone()[0]
+
+
 def derive_scorecards(con) -> None:
     """Build per-innings batting and bowling scorecards from the ball-by-ball tables.
 
@@ -254,6 +270,14 @@ def main() -> None:
     zip_path = args.zip or download(args.url)
     counts = build_db(zip_path, args.db)
     print(f"Built {args.db}: " + ", ".join(f"{k}={v:,}" for k, v in counts.items()))
+    try:
+        names_csv = download(NAMES_URL)
+    except requests.RequestException as e:  # search still works on Cricsheet names alone
+        print(f"Player names not loaded: {e}")
+    else:
+        con = duckdb.connect(str(args.db))
+        print(f"Player names: {load_player_names(con, names_csv):,}")
+        con.close()
     if args.wikipedia:
         from cricket import scorecards, wikipedia
         tests, report = wikipedia.england_checked(wikipedia.all_tests())

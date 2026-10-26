@@ -56,7 +56,7 @@ Pages sit in a menu along the top. Each page is a file in `app_pages/` that call
 
 | Piece | File | What it does |
 |---|---|---|
-| Ingest | `src/cricket/ingest.py` | Downloads `tests_male_json.zip`, loads `matches` (with toss, margin, host country, home team), `appearances`, `deliveries`, `wickets`, `innings` (totals, declared) and `batting_order` tables, and a one-row `build_info` |
+| Ingest | `src/cricket/ingest.py` | Downloads `tests_male_json.zip`, loads `matches` (with toss, margin, host country, home team), `appearances`, `deliveries`, `wickets`, `innings` (totals, declared) and `batting_order` tables, `player_names` (other names from Cricsheet's People Register `names.csv`, e.g. "Steve Smith" for "SPD Smith") and a one-row `build_info` |
 | Venues | `src/cricket/venues.py` | City → host nation lookup, so home/away/neutral works |
 | Older Tests | `src/cricket/wikipedia.py` | Reads Wikipedia's "International cricket in <season>" pages (cached in `data/raw/wikipedia/`), fixes known page errors and cross-checks England's Tests against England's results lists |
 | Mixed detail | `src/cricket/scorecards.py` | Adds result-only or scorecard-only matches beside Cricsheet's, skipping ones already present; `matches.detail` says which |
@@ -144,4 +144,8 @@ Tests), because draws were far more common before the 1990s.
   warm the ratings up and are not used to fit the match model.
 - The chase model can't see rain or bad light, which use time without overs being bowled.
 - Predictions are probabilities, not certainties. Check the Model accuracy page before trusting one.
-- Players are named as Cricsheet names them (e.g. "SPD Smith"); search by surname.
+- Players are named as Cricsheet names them (e.g. "SPD Smith"). Search also takes full names,
+  first names and typos ("steve smith", "stve smith") using the People Register's name variants,
+  which cover about 85% of players; the rest are found by Cricsheet name only. The register
+  also keeps a few other sources' mix-ups ("Anderson Cummins" for Pat Cummins), so those
+  searches can show an extra player.

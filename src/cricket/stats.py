@@ -12,6 +12,8 @@ Strike rates and economy are worked out only over the innings where balls are kn
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date
 
@@ -52,20 +54,81 @@ def connect(db_path: str) -> duckdb.DuckDBPyConnection:
     return duckdb.connect(db_path, read_only=True)
 
 
-def find_players(con, query: str, limit: int = 20) -> pd.DataFrame:
-    """Search players by name substring. Returns id, name, team, matches, span."""
+def _norm(name: str) -> str:
+    """Lower case, accents and punctuation removed: "Ross Taylor-Smith" -> "ross taylor smith"."""
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z]+", " ", plain.lower()).strip()
+
+
+def _sql_norm(col: str) -> str:
+    return f"trim(regexp_replace(lower(strip_accents({col})), '[^a-z]+', ' ', 'g'))"
+
+
+def find_players(con, query: str, limit: int = 20, min_score: float = 0.85) -> pd.DataFrame:
+    """Fuzzy player search over Cricsheet names ("SPD Smith") and register names ("Steve Smith").
+
+    A name scores 1 if a word starts with the query, 0.9 if it contains it elsewhere. Otherwise
+    every query word must match a word of the name: a prefix ("ste" for "steve") scores 1, else
+    Jaro-Winkler similarity (typos such as "stve"); words of one or two letters only match as
+    prefixes, so "s smith" finds initials and "root" doesn't find "RO Hinds". The name's score is its worst query word, or the
+    whole-string similarity less 0.05 if higher ("devilliers").
+    Returns id, name, full_name, team, matches, span, score; best match first.
+    """
+    q = _norm(query)
+    if not q:
+        return pd.DataFrame(columns=["player_id", "player", "full_name", "team", "matches",
+                                     "first_year", "last_year", "score"])
+    has_names = con.execute("SELECT count(*) FROM information_schema.tables "
+                            "WHERE table_name = 'player_names'").fetchone()[0]
+    register = "UNION ALL SELECT player_id, name FROM player_names" if has_names else ""
+    # first register name with a full first name matching one of the initials and the same
+    # surname; the register also keeps other sources' mistakes (J Overton as "Craig Overton")
+    full_name = """(SELECT name FROM player_names n WHERE n.player_id = p.player_id
+                    AND regexp_matches(name, '^[^ .]{2,} ')
+                    AND contains(split_part(p.player, ' ', 1), name[1])
+                    AND split_part(name, ' ', -1) = split_part(p.player, ' ', -1)
+                    ORDER BY position LIMIT 1)""" if has_names else "NULL"
     return con.execute(
-        """
-        SELECT a.player_id, a.player, string_agg(DISTINCT a.team, ' / ') AS team,
-               count(DISTINCT a.match_id) AS matches,
-               year(min(m.start_date)) AS first_year, year(max(m.start_date)) AS last_year
-        FROM appearances a JOIN matches m USING (match_id)
-        WHERE a.player ILIKE ? AND a.player_id IS NOT NULL
-        GROUP BY a.player_id, a.player
-        ORDER BY matches DESC
-        LIMIT ?
+        f"""
+        WITH names AS (
+            SELECT DISTINCT player_id, player AS name FROM appearances WHERE player_id IS NOT NULL
+            {register}
+        ),
+        scored AS (
+            SELECT player_id, {_sql_norm("name")} AS n FROM names
+        ),
+        best AS (
+            SELECT player_id, max(greatest(
+                CASE WHEN starts_with(n, $q) OR contains(n, ' ' || $q) THEN 1.0
+                     WHEN contains(n, $q) THEN 0.9 ELSE 0.0 END,
+                jaro_winkler_similarity(replace(n, ' ', ''), replace($q, ' ', '')) - 0.05,
+                list_min(list_transform($words, lambda w: list_max(list_transform(
+                    string_split(n, ' '), lambda a: CASE
+                        WHEN starts_with(a, w) THEN 1.0
+                        WHEN length(w) <= 2 OR length(a) <= 2 THEN 0.0
+                        ELSE jaro_winkler_similarity(w, a) END))))
+            )) AS score,
+            -- breaks ties between several-word queries: "s smith" is closer to "S Smith" (SPD)
+            -- than to "GC Smith", though every word matches both
+            max(jaro_winkler_similarity(n, $q)) FILTER (WHERE len($words) > 1) AS closeness
+            FROM scored GROUP BY player_id
+        ),
+        players AS (
+            SELECT a.player_id, any_value(a.player) AS player,
+                   string_agg(DISTINCT a.team, ' / ') AS team,
+                   count(DISTINCT a.match_id) AS matches,
+                   year(min(m.start_date)) AS first_year, year(max(m.start_date)) AS last_year
+            FROM appearances a JOIN matches m USING (match_id)
+            WHERE a.player_id IN (SELECT player_id FROM best WHERE score >= $min_score)
+            GROUP BY a.player_id
+        )
+        SELECT p.player_id, p.player, {full_name} AS full_name, p.team, p.matches,
+               p.first_year, p.last_year, round(b.score, 3) AS score
+        FROM players p JOIN best b USING (player_id)
+        ORDER BY score DESC, b.closeness DESC NULLS LAST, matches DESC, player
+        LIMIT $limit
         """,
-        [f"%{query}%", limit],
+        {"q": q, "words": q.split(), "min_score": min_score, "limit": limit},
     ).df()
 
 
