@@ -175,6 +175,32 @@ runs at 99.94; Tendulkar 15,921; Muralitharan 795 wickets for Sri Lanka (800 wit
 Test). Each list states the date it is correct to (June 2025 to October 2026), so players who
 made their debut since are only in the scorecard data, and a player's totals are per team.
 
+## Player page: whole Test career, Cricinfo style
+
+`stats.test_career` gives three tables per player (one row per team): batting (Mat, Inns, NO,
+Runs, HS, Ave, BF, SR, 100s, 50s, 4s, 6s), bowling (Mat, Inns, Balls, Runs, Wkts, BBI, BBM,
+Ave, Econ, SR, 4w, 5w, 10w) and other (cap, first and last Test, Ct, St). Where every Test the
+player played for that team is ball-by-ball and agrees with the list on runs and wickets (674
+of 3,301 rows), every figure is counted from the deliveries; Rabada's row matches his
+Cricinfo profile exactly. Otherwise it comes from the team list, with gaps filled from the
+player's article infobox (`infobox.py`, used for 3,102 rows whose matches and runs agree) and
+counts that are certain (no hundreds with a top score under 100, no 5w with best figures
+under 5). Runs conceded missing from a list are worked out from the bowling average when only
+one whole number fits.
+
+Coverage (October 2026 build, 3,287 players; bowling figures for the 2,416 rows who bowled):
+
+| Field | Filled | Gap and why |
+|---|---|---|
+| Mat, Runs, HS, Ave, Ct, St, cap, years | 97–100% | Ave is blank only with no dismissals |
+| 100s, 50s | 99% | Article stale or covering two teams |
+| Inns, NO | 69% | England, India, Bangladesh, Ireland and Afghanistan lists have no innings column; infoboxes don't either |
+| BF, batting SR, 4s, 6s | 20% | Only ball-by-ball Tests (2001 on, not Afghanistan) |
+| Balls, Wkts, BBI, 5w, 10w | 99–100% | |
+| Bowling runs, Econ | 87% | England, India and smaller lists lack runs conceded; derived from the average where exact |
+| 4w | 66% | Known only from ball-by-ball, or 0 when best figures are under 4 |
+| Bowling Inns, BBM | 21% | Need full scorecards; only ball-by-ball has them |
+
 ## Known limits
 
 - Player stats cover only ball-by-ball (and any future scorecard) Tests, so careers before 2002

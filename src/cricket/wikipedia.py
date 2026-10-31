@@ -13,6 +13,7 @@ Usage:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 import urllib.parse
@@ -47,13 +48,14 @@ MONTHS = {m: i for i, m in enumerate(
 
 # ---------------------------------------------------------------- fetching
 
-def wikitext(title: str, cache: Path = CACHE, max_age_hours: float | None = None) -> str | None:
+def wikitext(title: str, cache: Path = CACHE, max_age_hours: float | None = None,
+             _hops: int = 0) -> str | None:
     """Raw wikitext of a page (follows one redirect), cached on disk; None if missing.
 
     A cached copy is used unless it is older than max_age_hours (None: always use it).
     """
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / (re.sub(r"[^\w]+", "_", title) + ".wiki")
+    path = _cache_path(title, cache)
     fresh = path.exists() and (
         max_age_hours is None or time.time() - path.stat().st_mtime < max_age_hours * 3600)
     if fresh:
@@ -74,7 +76,72 @@ def wikitext(title: str, cache: Path = CACHE, max_age_hours: float | None = None
     if not text:
         return None
     m = re.match(r"#REDIRECT\s*\[\[([^\]#|]+)", text, re.I)
-    return wikitext(m.group(1).strip(), cache, max_age_hours) if m else text
+    if m and _hops < 3:
+        return wikitext(m.group(1).strip(), cache, max_age_hours, _hops + 1)
+    return None if m else text
+
+
+def _cache_path(title: str, cache: Path) -> Path:
+    """Cache file for a title; titles with punctuation get a hash, so "K. S. Bharat" and its
+    redirect "K S Bharat" don't share a file."""
+    name = re.sub(r"[^\w]+", "_", title)
+    if not re.fullmatch(r"[\w ]+", title):
+        name += "_" + hashlib.md5(title.encode()).hexdigest()[:8]
+    return cache / (name + ".wiki")
+
+
+def _title_key(title: str) -> str:
+    """Titles as Wikipedia normalises them: spaces for underscores, first letter upper case."""
+    t = re.sub(r"[_\s]+", " ", title).strip()
+    return t[:1].upper() + t[1:]
+
+
+def prefetch(titles: list[str], cache: Path = CACHE, max_age_hours: float | None = None,
+             batch: int = 50) -> int:
+    """Fetch many pages into the cache that wikitext() reads, 50 per request; returns pages fetched.
+
+    Uses Special:Export, which returns several pages per request (one request per player
+    would be thousands). Redirects are followed by fetching their targets in a further round;
+    a missing page is cached as empty, as wikitext() does.
+    """
+    import xml.etree.ElementTree as ET
+    cache.mkdir(parents=True, exist_ok=True)
+    fetched, todo = 0, list(dict.fromkeys(t for t in titles if t))
+    for _ in range(3):  # pages, then redirect targets, then targets of double redirects
+        stale = [t for t in todo if not (_cache_path(t, cache).exists() and (
+            max_age_hours is None
+            or time.time() - _cache_path(t, cache).stat().st_mtime < max_age_hours * 3600))]
+        targets = []
+        for i in range(0, len(stale), batch):
+            chunk = stale[i:i + batch]
+            for attempt in range(6):
+                r = requests.post("https://en.wikipedia.org/w/index.php",
+                                  data={"title": "Special:Export", "pages": "\n".join(chunk),
+                                        "curonly": "1", "action": "submit"},
+                                  headers={"User-Agent": USER_AGENT}, timeout=120)
+                if r.status_code == 200:
+                    break
+                time.sleep(5 * 2 ** attempt)  # rate limited: back off
+            else:
+                r.raise_for_status()
+            texts = {}
+            for page in ET.fromstring(r.content).iter():
+                if page.tag.endswith("}page"):
+                    title = next(e.text for e in page.iter() if e.tag.endswith("}title"))
+                    text = next((e.text or "" for e in page.iter() if e.tag.endswith("}text")), "")
+                    texts[_title_key(title)] = text
+            for t in chunk:
+                text = texts.get(_title_key(t), "")
+                _cache_path(t, cache).write_text(text)
+                m = re.match(r"#REDIRECT\s*\[\[([^\]#|]+)", text, re.I)
+                if m:
+                    targets.append(m.group(1).strip())
+            fetched += len(chunk)
+            time.sleep(1)  # be polite
+        if not targets:
+            break
+        todo = targets
+    return fetched
 
 
 def season_titles(first: int = FIRST_SEASON, last: int = LAST_SEASON) -> list[str]:

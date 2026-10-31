@@ -1,6 +1,7 @@
 """One function per page of the web app. Each takes the shared Ctx; stat SQL stays in cricket.stats."""
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from cricket import guru, questions, scorecards, stats
@@ -23,11 +24,29 @@ def home(ctx: Ctx):
     st.subheader("What you can do")
     a, b, c = st.columns(3)
     a.page_link(PAGES["player"], label="Look up a player", icon=":material/person_search:")
-    a.page_link(PAGES["compare"], label="Compare players", icon=":material/compare_arrows:")
-    b.page_link(PAGES["teams"], label="Team records and head-to-head", icon=":material/groups:")
-    b.page_link(PAGES["leaderboards"], label="Leaderboards", icon=":material/leaderboard:")
-    c.page_link(PAGES["predict"], label="Predict a Test", icon=":material/insights:")
+    b.page_link(PAGES["ask"], label=GURU_TITLE, icon=":material/chat:")
     c.page_link(PAGES["about"], label="Where the data comes from", icon=":material/info:")
+    st.caption("Coming soon: player comparisons, team records, leaderboards, predictions and games.")
+
+
+BAT_LABELS = {"team": "Team", "matches": "Mat", "innings": "Inns", "not_outs": "NO", "runs": "Runs",
+              "high_score": "HS", "average": "Ave", "balls_faced": "BF", "strike_rate": "SR",
+              "hundreds": "100s", "fifties": "50s", "fours": "4s", "sixes": "6s", "source": "Source"}
+BOWL_LABELS = {"team": "Team", "matches": "Mat", "innings": "Inns", "balls": "Balls", "runs": "Runs",
+               "wickets": "Wkts", "best_innings": "BBI", "best_match": "BBM", "average": "Ave",
+               "economy": "Econ", "strike_rate": "SR", "four_wickets": "4w", "five_wickets": "5w",
+               "ten_wickets": "10w", "source": "Source"}
+OTHER_LABELS = {"team": "Team", "cap": "Cap", "first_year": "First Test", "last_year": "Last Test",
+                "catches": "Ct", "stumpings": "St", "figures_as_of": "Figures as of"}
+
+
+def _career_table(df, labels: dict, places: dict | None = None):
+    """A career table as text, Cricinfo style: fixed decimals, and "-" where a figure is unknown."""
+    out = df.astype(object).map(lambda v: int(v) if isinstance(v, float) and v.is_integer() else v)
+    for col, n in (places or {}).items():
+        out[col] = [f"{v:.{n}f}" if v is not None and not pd.isna(v) else None for v in df[col]]
+    out = out.where(out.notna(), "-").astype(str).replace({"<NA>": "-", "None": "-", "nan": "-"})
+    st.dataframe(out.rename(columns=labels), hide_index=True, width="stretch")
 
 
 def player(ctx: Ctx):
@@ -35,25 +54,36 @@ def player(ctx: Ctx):
     pid = player_picker(ctx.con, "Search player", "one")
     if not pid:
         return
-    career = stats.career_totals(ctx.con, pid)
-    if not career.empty:
-        st.subheader("Whole career")
-        st.dataframe(tidy(career.drop(columns=["name", "as_of"])), hide_index=True, width="stretch")
-        st.caption("Every Test for each team, from Wikipedia's list of that team's Test cricketers "
-                   f"(figures correct as of {', '.join(sorted(set(career.as_of.dropna())))}). "
-                   "Filters don't apply here.")
+    career = stats.test_career(ctx.con, pid)
+    if not career["batting"].empty:
+        st.subheader("Batting")
+        _career_table(career["batting"], BAT_LABELS, {"average": 2, "strike_rate": 2})
+        st.subheader("Bowling")
+        _career_table(career["bowling"], BOWL_LABELS, {"average": 2, "economy": 2, "strike_rate": 1})
+        st.subheader("Other")
+        _career_table(career["other"], OTHER_LABELS)
+        st.caption(
+            "Whole Test career, one row per team. Where every Test is in Cricsheet's ball-by-ball "
+            "data (most players since 2002) every figure is counted from the deliveries. Otherwise "
+            "figures come from Wikipedia's list of the team's Test cricketers, with gaps filled from "
+            "the player's article. A dash means no open source has it: balls faced, fours and sixes "
+            "weren't recorded for most early Tests, and best-in-a-match, 4-wicket innings and "
+            "bowling innings need full scorecards. Filters don't apply to these tables.")
     f = ctx.filters
     if not stats.batting_summary(ctx.con, pid)["innings"] and not stats.bowling_summary(ctx.con, pid)["innings_bowled"]:
-        st.info("No scorecards for this player's Tests yet (they start in 2001), so the detailed "
-                "stats and splits below the career totals aren't available.")
+        st.info("No ball-by-ball scorecards for this player's Tests (they start in 2001), so the "
+                "filtered stats and splits aren't available.")
         return
-    st.subheader("From scorecards (2001 on)")
+    st.divider()
+    st.subheader("Filtered stats and splits (ball-by-ball Tests, 2001 on)")
+    st.caption("These cover only Tests with ball-by-ball scorecards, not the whole career. "
+               "The sidebar filters apply.")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Batting")
+        st.markdown("**Batting**")
         st.json(stats.batting_summary(ctx.con, pid, f))
     with c2:
-        st.subheader("Bowling")
+        st.markdown("**Bowling**")
         st.json(stats.bowling_summary(ctx.con, pid, f))
     yearly = stats.runs_by_year(ctx.con, pid, f)
     if not yearly.empty:
@@ -68,8 +98,14 @@ def player(ctx: Ctx):
         st.dataframe(stats.home_away_split(ctx.con, pid, f), hide_index=True)
 
 
+def coming_soon():
+    st.info("Coming soon. This page is an early preview while we focus on player search and the "
+            "stats guru, so it may change or show gaps.", icon=":material/construction:")
+
+
 def compare(ctx: Ctx):
     st.title("Compare players")
+    coming_soon()
     cols = st.columns(2)
     with cols[0]:
         p1 = player_picker(ctx.con, "Player 1", "p1")
@@ -82,6 +118,7 @@ def compare(ctx: Ctx):
 
 def teams(ctx: Ctx):
     st.title("Teams")
+    coming_soon()
     c1, c2 = st.columns(2)
     team = c1.selectbox("Team", ctx.teams, key="team")
     rival = c2.selectbox("Head-to-head against", ["(none)"] + [t for t in ctx.teams if t != team])
@@ -106,6 +143,7 @@ def teams(ctx: Ctx):
 
 def leaderboards(ctx: Ctx):
     st.title("Leaderboards")
+    coming_soon()
     c1, c2, c3 = st.columns(3)
     kind = c1.radio("Leaderboard", ["All-time careers", "Batting", "Bowling"], horizontal=True)
     if kind == "All-time careers":
@@ -131,6 +169,7 @@ def leaderboards(ctx: Ctx):
 
 def predict(ctx: Ctx):
     st.title("Predict")
+    coming_soon()
     m = models()
     st.caption("Probabilities from simple models fitted to past Tests (match results since 1877; "
                "chases and players from ball-by-ball Tests since 2001). "
@@ -190,6 +229,7 @@ def predict(ctx: Ctx):
 
 def accuracy(ctx: Ctx):
     st.title("Model accuracy")
+    coming_soon()
     m = models()
     st.write("Each model is fitted on older matches and scored on the most recent 20% it never saw. "
              "Lower log loss, Brier score and MAE are better; the baseline is a naive guess.")

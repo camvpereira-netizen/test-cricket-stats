@@ -32,14 +32,14 @@ def page(name: str, title: str, icon: str, default: bool = False) -> st.Page:
 STATS_PAGES = ["player", "compare", "teams", "leaderboards"]
 nav = st.navigation({
     "": [page("home", "Home", "home", default=True)],
-    "Stats": [page("player", "Players", "person_search"),
-              page("compare", "Compare", "compare_arrows"),
-              page("teams", "Teams", "groups"),
-              page("leaderboards", "Leaderboards", "leaderboard"),
+    "Stats": [page("player", "Player search", "person_search"),
               page("ask", "Ask the guru", "chat")],
-    "Predict": [page("predict", "Predictions", "insights"),
-                page("accuracy", "Model accuracy", "fact_check")],
-    "Coming soon": [page("games", "Games", "sports_esports")],
+    "Coming soon": [page("compare", "Compare", "compare_arrows"),
+                    page("teams", "Teams", "groups"),
+                    page("leaderboards", "Leaderboards", "leaderboard"),
+                    page("predict", "Predictions", "insights"),
+                    page("accuracy", "Model accuracy", "fact_check"),
+                    page("games", "Games", "sports_esports")],
     "About": [page("about", "About the data", "info")],
 }, position="top")
 

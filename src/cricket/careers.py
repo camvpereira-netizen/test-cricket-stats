@@ -2,7 +2,8 @@
 
 Each list has one row per capped player: cap number, name, first and last year, matches,
 runs, highest score, batting average, balls, wickets, best bowling, bowling average,
-catches and stumpings (some lists also innings, not outs, maidens, 100s/50s). That covers
+catches and stumpings (some lists also innings, not outs, maidens, 100s/50s, 5w/10w).
+Gaps are filled from each player's article infobox (infobox.py). That covers
 players from 1877 on, where ball-by-ball and scorecard data only start in 2001.
 
 Totals are for one team only (a player capped by two teams has a row on each list), and
@@ -45,16 +46,16 @@ HEADERS = {
     "inn": "innings", "innings": "innings", "no": "not_outs", "runs": "runs", "hs": "high_score",
     "avg": "batting_average", "ave": "bowling_average", "100/50": "hundreds_fifties",
     "balls": "balls", "mdn": "maidens", "wkt": "wickets", "best": "best_bowling",
-    "bbi": "best_bowling", "ca": "catches", "ct": "catches", "st": "stumpings",
+    "bbi": "best_bowling", "5/10 wicket": "five_ten", "ca": "catches", "ct": "catches", "st": "stumpings",
 }
 INT_COLUMNS = ["cap", "first_year", "last_year", "matches", "innings", "not_outs", "runs",
                "balls", "maidens", "runs_conceded", "wickets", "catches", "stumpings",
-               "hundreds", "fifties"]
+               "hundreds", "fifties", "five_wickets", "ten_wickets"]
 FLOAT_COLUMNS = ["batting_average", "bowling_average"]
 COLUMNS = ["team", "cap", "name", "wiki_title", "cricinfo_id", "first_year", "last_year",
            "matches", "innings", "not_outs", "runs", "high_score", "batting_average", "hundreds",
            "fifties", "balls", "maidens", "runs_conceded", "wickets", "best_bowling",
-           "bowling_average", "catches", "stumpings", "as_of"]
+           "bowling_average", "five_wickets", "ten_wickets", "catches", "stumpings", "as_of"]
 
 
 def _templates(cell: str) -> str:
@@ -99,7 +100,7 @@ def _rejoin(cells: list[str]) -> list[str]:
 
 def parse_list(text: str, team: str) -> pd.DataFrame:
     """One row per player on a team's list page."""
-    as_of = re.search(r"correct as of ([^.<]*\d{4})", text)
+    as_of = re.search(r"correct as of ([^.<]*?\d{4})", text)
     header: list[str] | None = None
     rows = []
     for _, cells in _rows(text):
@@ -142,6 +143,9 @@ def parse_list(text: str, team: str) -> pd.DataFrame:
     if "hundreds_fifties" in df:
         hf = df.hundreds_fifties.str.extract(r"(\d+)\s*/\s*(\d+)")
         df["hundreds"], df["fifties"] = hf[0], hf[1]
+    if "five_ten" in df:  # India's "5/10 wicket": five-wicket innings / ten-wicket matches
+        ft = df.five_ten.str.extract(r"(\d+)\s*/\s*(\d+)")
+        df["five_wickets"], df["ten_wickets"] = ft[0], ft[1]
     for c in INT_COLUMNS + FLOAT_COLUMNS:
         if c in df:
             df[c] = df[c].map(lambda v: _number(str(v)) if pd.notna(v) else None)
@@ -154,13 +158,18 @@ def parse_list(text: str, team: str) -> pd.DataFrame:
     return df
 
 
-def all_careers() -> pd.DataFrame:
+def all_careers(infoboxes: bool = True) -> pd.DataFrame:
+    """Every list row; with infoboxes, gaps filled from the players' articles (infobox.py)."""
     frames = []
     for team, title in LIST_PAGES.items():
         text = wikitext(title, max_age_hours=MAX_AGE_HOURS)
         if text:
             frames.append(parse_list(text, team))
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=COLUMNS)
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=COLUMNS)
+    if infoboxes and not df.empty:
+        from cricket import infobox
+        df = infobox.fill(df, infobox.fetch(sorted(set(df.wiki_title.dropna()))))
+    return df
 
 
 def _surname(name: str) -> str:
