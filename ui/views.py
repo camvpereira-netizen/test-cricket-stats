@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from cricket import scorecards, stats
+from cricket import guru, scorecards, stats
+from ui import common
 from ui.common import Ctx, models, player_picker, show_probs, tidy
 
 
@@ -203,16 +204,83 @@ def accuracy(ctx: Ctx):
     st.json(m["player"].metrics)
 
 
+GURU_TITLE = "Ask the guru"  # working name until Cam picks one
+GURU_EXAMPLES = [
+    "Who has the best batting average in the fourth innings in Asia since 2010, minimum 15 innings?",
+    "How does Joe Root's average in Australia compare with Steve Smith's in England?",
+    "Which bowlers have the most wickets at Lord's?",
+    "What is India's record against Australia since 2000?",
+]
+TOOL_LABELS = {t["name"]: t["name"].replace("_", " ").capitalize() for t in guru.TOOLS}
+
+
+def _show_guru_answer(a: guru.Answer):
+    st.markdown(a.text)
+    if a.steps:
+        with st.expander(f"How the guru worked this out ({len(a.steps)} lookups)"):
+            st.caption("Each lookup runs one of the site's tested stat functions. The guru cannot "
+                       "write its own database queries.")
+            for step in a.steps:
+                args = ", ".join(f"{k}={v}" for k, v in step.args.items()) or "no inputs"
+                st.markdown(f"**{TOOL_LABELS.get(step.tool, step.tool)}** ({args})")
+                if step.error:
+                    st.warning(step.error)
+                elif step.table is not None:
+                    st.dataframe(tidy(step.table), hide_index=True, width="stretch")
+    st.caption(f"{a.input_tokens:,} input and {a.output_tokens:,} output tokens")
+
+
 def ask(ctx: Ctx):
-    st.title("Ask a question")
-    st.info("Coming in phase 3 of the plan: ask in plain English and an agent answers from this "
-            "database, showing the query it ran. Every number is re-checked before it is shown.",
-            icon=":material/construction:")
-    st.write("Questions it is being built to answer:")
-    st.markdown("- Who has the best batting average in fourth innings in Asia since 2010, minimum 15 innings?\n"
-                "- How does Root's average in Australia compare with Smith's in England?\n"
-                "- Which bowlers have taken five-fors in both innings of a Test at Lord's?\n"
-                "- What are India's chances in the next Test against England in Chennai?")
+    st.title(GURU_TITLE)
+    st.write("Ask about men's Test cricket in plain English. Claude answers by calling the same "
+             "tested stat functions as the rest of the site, and shows every lookup it made.")
+    st.caption("Player stats with filters cover Tests with scorecards (mostly 2001 on); whole-career "
+               "totals cover every Test. Answers can still be wrong, so check the lookups.")
+    client, why = common.guru_client()
+    if client is None:
+        st.info(why, icon=":material/key:")
+        st.write("Questions it can answer:")
+        st.markdown("\n".join(f"- {q}" for q in GURU_EXAMPLES))
+        return
+    password = common.secret("GURU_PASSWORD")
+    if password and not st.session_state.get("guru_unlocked"):
+        if st.text_input("Password", type="password", key="guru_pw") == password:
+            st.session_state["guru_unlocked"] = True
+            st.rerun()
+        return
+
+    history = st.session_state.setdefault("guru_history", [])
+    for q, a in history:
+        with st.chat_message("user"):
+            st.write(q)
+        with st.chat_message("assistant"):
+            _show_guru_answer(a)
+    if not history:
+        st.write("Try one of these:")
+        for i, q in enumerate(GURU_EXAMPLES):
+            if st.button(q, key=f"guru_ex_{i}"):
+                st.session_state["guru_pending"] = q
+    question = st.chat_input("Ask a question", max_chars=guru.MAX_QUESTION_CHARS) \
+        or st.session_state.pop("guru_pending", None)
+    if not question:
+        return
+    if blocked := common.guru_take_question():
+        st.warning(blocked)
+        return
+    with st.chat_message("user"):
+        st.write(question)
+    with st.chat_message("assistant"):
+        with st.spinner("Looking it up..."):
+            try:
+                answer = guru.ask(ctx.con, question, client,
+                                  model=common.secret("GURU_MODEL", guru.DEFAULT_MODEL),
+                                  effort=common.secret("GURU_EFFORT", guru.DEFAULT_EFFORT),
+                                  history=[(q, a.text) for q, a in history[-3:] if a.ok])
+            except Exception as e:  # API errors: bad key, spend limit reached, outage
+                st.error(f"The guru couldn't answer just now ({type(e).__name__}). Please try again later.")
+                return
+        _show_guru_answer(answer)
+    history.append((question, answer))
 
 
 def games(ctx: Ctx):

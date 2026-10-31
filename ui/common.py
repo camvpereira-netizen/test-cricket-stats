@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +34,16 @@ def _db_url() -> str | None:
     except Exception as e:  # a secrets file that does not parse
         st.warning(f"Could not read the app's secrets ({e}); using the default data link.")
     return None if "CRICKET_DB" in os.environ else DEFAULT_DB_URL
+
+
+def secret(name: str, default: str | None = None) -> str | None:
+    """A setting from the environment or Streamlit secrets, environment first."""
+    if value := os.environ.get(name):
+        return value
+    try:
+        return st.secrets.get(name, default)
+    except Exception:  # no secrets file, or one that does not parse
+        return default
 
 
 def download_db(url: str, dest: Path) -> None:
@@ -141,3 +153,42 @@ def show_probs(p: dict[str, float]):
 
 def tidy(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=[c for c in df.columns if c.endswith("player_id")], errors="ignore")
+
+
+# The stats guru (Ask page). The API key and limits come from env or Streamlit secrets.
+GURU_DAILY_LIMIT = 100    # questions a day across everyone, unless GURU_DAILY_LIMIT is set
+GURU_SESSION_LIMIT = 20   # questions per browser session, unless GURU_SESSION_LIMIT is set
+
+
+def guru_client():
+    """(client, None) when an Anthropic API key is set, else (None, reason)."""
+    key = secret("ANTHROPIC_API_KEY")
+    if not key:
+        return None, "The guru needs an Anthropic API key. Add ANTHROPIC_API_KEY to the app's secrets."
+    try:
+        import anthropic
+    except ImportError:
+        return None, "The anthropic package is not installed (pip install -r requirements.txt)."
+    return anthropic.Anthropic(api_key=key, max_retries=2, timeout=120), None
+
+
+@st.cache_resource
+def _guru_counter() -> dict:
+    """Shared by every visitor of this app process: today's date and questions asked."""
+    return {"day": date.today(), "count": 0, "lock": threading.Lock()}
+
+
+def guru_take_question() -> str | None:
+    """Count one question against the limits. Returns None if allowed, else why not."""
+    asked = st.session_state.get("guru_asked", 0)
+    if asked >= int(secret("GURU_SESSION_LIMIT", GURU_SESSION_LIMIT)):
+        return "You've reached the question limit for this visit. Reload the page later to ask more."
+    c = _guru_counter()
+    with c["lock"]:
+        if c["day"] != date.today():
+            c["day"], c["count"] = date.today(), 0
+        if c["count"] >= int(secret("GURU_DAILY_LIMIT", GURU_DAILY_LIMIT)):
+            return "The guru has answered its limit of questions for today. Please try again tomorrow."
+        c["count"] += 1
+    st.session_state["guru_asked"] = asked + 1
+    return None

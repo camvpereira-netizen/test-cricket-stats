@@ -35,11 +35,11 @@ nav = st.navigation({
     "Stats": [page("player", "Players", "person_search"),
               page("compare", "Compare", "compare_arrows"),
               page("teams", "Teams", "groups"),
-              page("leaderboards", "Leaderboards", "leaderboard")],
+              page("leaderboards", "Leaderboards", "leaderboard"),
+              page("ask", "Ask the guru", "chat")],
     "Predict": [page("predict", "Predictions", "insights"),
                 page("accuracy", "Model accuracy", "fact_check")],
-    "Coming soon": [page("ask", "Ask", "chat"),
-                    page("games", "Games", "sports_esports")],
+    "Coming soon": [page("games", "Games", "sports_esports")],
     "About": [page("about", "About the data", "info")],
 }, position="top")
 

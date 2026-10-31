@@ -35,6 +35,9 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
 - `src/cricket/wikidata.py` — full player names from Wikidata (CC0), matched by register ids.
 - `src/cricket/scorecards.py` — adds result-only / scorecard-only matches; coverage table.
 - `src/cricket/stats.py` — all stat SQL lives here; UI and future MCP server only call these functions.
+- `src/cricket/guru.py` — the Ask page's stats guru: Claude answers questions by calling checked
+  wrappers of `stats.py` functions (tools). Never give it a raw SQL tool; new questions it can't
+  answer need a new tested stats function and tool. Tests use a fake client (`tests/test_guru.py`).
 - `src/cricket/predict.py` — prediction models. Features must use only information from before
   the match/ball being predicted; every model reports held-out metrics against a baseline.
 - `app.py` — Streamlit web app entry and top menu; pages are `app_pages/<name>.py`, each calling
@@ -56,5 +59,6 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
 1. [ ] Nightly refresh on GitHub Actions (workflow written; needs the GitHub repo)
 2. [ ] MCP server exposing the stats, query and prediction functions as tools
 3. [ ] Agents (router, stats, SQL, prediction) with a checker and a golden question set; the Ask page
+   (Ask page done as the stats guru: one Claude tool loop over the stats functions, no SQL)
 4. [ ] Games: higher or lower, guess the cricketer, guess the Test, predict the Test
 5. [ ] Player data before 2001 from licensed sources; Wikidata player details

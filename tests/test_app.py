@@ -41,3 +41,17 @@ def test_player_and_predict_pages(app):
     app.radio(key="pred_kind").set_value("Player's next innings").run()
     app.text_input(key="q_pred").set_value("India").run()
     assert not app.exception, app.exception
+
+
+def test_ask_page_with_fake_claude(app, monkeypatch):
+    """With a key set, an example question goes through the guru and the answer shows."""
+    import anthropic
+    from test_guru import FakeClient, call, reply, text
+    fake = FakeClient([reply(call("list_teams", {}), stop="tool_use"), reply(text("India and England."))])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: fake)
+    app.switch_page("app_pages/ask.py").run()
+    app.button(key="guru_ex_0").click().run()
+    assert not app.exception, app.exception
+    assert any("India and England." in m.value for m in app.markdown)
+    assert len(fake.requests) == 2

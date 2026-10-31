@@ -4,3 +4,4 @@ streamlit>=1.46
 requests>=2.32
 scikit-learn>=1.5
 scipy>=1.13
+anthropic>=2.3
