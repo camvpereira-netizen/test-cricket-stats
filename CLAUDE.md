@@ -38,6 +38,8 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
 - `src/cricket/guru.py` — the Ask page's stats guru: Claude answers questions by calling checked
   wrappers of `stats.py` functions (tools). Never give it a raw SQL tool; new questions it can't
   answer need a new tested stats function and tool. Tests use a fake client (`tests/test_guru.py`).
+- `src/cricket/questions.py` — free question reader (no AI) tried before the guru: vocabulary +
+  fuzzy player names -> the same guru tools. Returns None when unsure rather than guessing.
 - `src/cricket/predict.py` — prediction models. Features must use only information from before
   the match/ball being predicted; every model reports held-out metrics against a baseline.
 - `app.py` — Streamlit web app entry and top menu; pages are `app_pages/<name>.py`, each calling

@@ -42,8 +42,10 @@ class Filters:
             clauses.append("(m.team1 = ? OR m.team2 = ?)")
             params += [self.opponent, self.opponent]
         if self.venue_contains:
-            clauses.append("(m.venue ILIKE ? OR m.city ILIKE ?)")
-            like = f"%{self.venue_contains}%"
+            # apostrophes ignored, so "Lords" finds "Lord's"
+            clauses.append("(replace(m.venue, '''', '') ILIKE ? OR replace(m.city, '''', '') ILIKE ?)")
+            plain = self.venue_contains.replace("'", "").replace("’", "")
+            like = f"%{plain}%"
             params += [like, like]
         if self.date_from:
             clauses.append("m.start_date >= ?")

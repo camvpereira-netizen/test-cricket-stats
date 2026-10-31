@@ -29,7 +29,7 @@ Pages sit in a menu along the top. Each page is a file in `app_pages/` that call
 |---|---|---|
 | Home | Home | Number of Tests, latest Test, when the data was built, the latest results |
 | Stats | Players, Compare, Teams, Leaderboards | Player summaries and splits, side-by-side comparison, team records and head-to-head with ratings, leaderboards. Filters (opponent, venue, dates) are in the sidebar on these pages |
-| Stats | Ask the guru | Plain-English questions answered by Claude, which calls the tested functions in `stats.py` (it never writes SQL) and shows each lookup. Needs an Anthropic API key, see below |
+| Stats | Ask the guru | Plain-English questions. Common ones are read for free by `questions.py`; others go to Claude if a key is set. Both call the tested functions in `stats.py` (never raw SQL) and show each lookup |
 | Predict | Predictions, Model accuracy | Match result, fourth-innings chase, a player's next innings, and how each model scores on held-out Tests |
 | Coming soon | Games | Placeholder for games (phase 4) |
 | About | About the data | Coverage by decade and level of detail |
@@ -58,6 +58,11 @@ function in `stats.py` (find a player, batting, bowling, splits, compare, leader
 record, head-to-head, recent results). Claude picks the tools and writes the answer; it cannot
 run its own SQL, and inputs such as team names, dates and player ids are checked before any
 query runs. The page shows every lookup and the table it returned.
+
+Common questions never reach Claude: `src/cricket/questions.py` reads them itself (no AI,
+free) by picking out player, team and country names, stats, innings, grounds, dates and
+minimums, then calls the same tools. Only questions it can't read go to Claude, and only when a
+key is set; without one the page suggests a rephrase.
 
 Settings, as Streamlit secrets (app settings, Secrets) or environment variables:
 

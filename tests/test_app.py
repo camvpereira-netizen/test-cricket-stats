@@ -43,8 +43,8 @@ def test_player_and_predict_pages(app):
     assert not app.exception, app.exception
 
 
-def test_ask_page_with_fake_claude(app, monkeypatch):
-    """With a key set, an example question goes through the guru and the answer shows."""
+def test_ask_page_reader_then_fake_claude(app, monkeypatch):
+    """Example questions are read for free; one the reader can't parse goes to Claude."""
     import anthropic
     from test_guru import FakeClient, call, reply, text
     fake = FakeClient([reply(call("list_teams", {}), stop="tool_use"), reply(text("India and England."))])
@@ -53,5 +53,17 @@ def test_ask_page_with_fake_claude(app, monkeypatch):
     app.switch_page("app_pages/ask.py").run()
     app.button(key="guru_ex_0").click().run()
     assert not app.exception, app.exception
+    assert any("Understood as" in m.value for m in app.markdown)
+    assert fake.requests == []
+    app.chat_input[0].set_value("Who was the best captain?").run()
+    assert not app.exception, app.exception
     assert any("India and England." in m.value for m in app.markdown)
     assert len(fake.requests) == 2
+
+
+def test_ask_page_without_key(app, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app.switch_page("app_pages/ask.py").run()
+    app.chat_input[0].set_value("Who was the best captain?").run()
+    assert not app.exception, app.exception
+    assert any("couldn't read that question" in m.value for m in app.markdown)
