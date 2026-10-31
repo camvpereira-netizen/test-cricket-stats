@@ -29,8 +29,9 @@ Pages sit in a menu along the top. Each page is a file in `app_pages/` that call
 |---|---|---|
 | Home | Home | Number of Tests, latest Test, when the data was built, the latest results |
 | Stats | Players, Compare, Teams, Leaderboards | Player summaries and splits, side-by-side comparison, team records and head-to-head with ratings, leaderboards. Filters (opponent, venue, dates) are in the sidebar on these pages |
+| Stats | Ask the guru | Plain-English questions. Common ones are read for free by `questions.py`; others go to Claude if a key is set. Both call the tested functions in `stats.py` (never raw SQL) and show each lookup |
 | Predict | Predictions, Model accuracy | Match result, fourth-innings chase, a player's next innings, and how each model scores on held-out Tests |
-| Coming soon | Ask, Games | Placeholders for the question-answering agent (phase 3) and games (phase 4) |
+| Coming soon | Games | Placeholder for games (phase 4) |
 | About | About the data | Coverage by decade and level of detail |
 
 ## Nightly data refresh and hosting
@@ -48,7 +49,36 @@ Pages sit in a menu along the top. Each page is a file in `app_pages/` that call
   This works for a public repo; a private repo's release files need a token, which the app
   does not handle yet.
 - Deploy on Streamlit Community Cloud: New app, pick the repo, branch `main`, main file
-  `app.py`. No secrets are needed.
+  `app.py`. No secrets are needed except for the guru.
+
+## Ask the guru (plain-English questions)
+
+`src/cricket/guru.py` gives Claude a fixed set of tools, each a checked wrapper around a
+function in `stats.py` (find a player, batting, bowling, splits, compare, leaderboards, team
+record, head-to-head, recent results). Claude picks the tools and writes the answer; it cannot
+run its own SQL, and inputs such as team names, dates and player ids are checked before any
+query runs. The page shows every lookup and the table it returned.
+
+Common questions never reach Claude: `src/cricket/questions.py` reads them itself (no AI,
+free) by picking out player, team and country names, stats, innings, grounds, dates and
+minimums, then calls the same tools. Only questions it can't read go to Claude, and only when a
+key is set; without one the page suggests a rephrase.
+
+Settings, as Streamlit secrets (app settings, Secrets) or environment variables:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | none | Turns the guru on. Create one at console.anthropic.com |
+| `GURU_MODEL` | `claude-opus-5-5` | Claude model to use |
+| `GURU_EFFORT` | `medium` | How hard Claude thinks: `low`, `medium` or `high` |
+| `GURU_DAILY_LIMIT` | 100 | Questions a day across all visitors |
+| `GURU_SESSION_LIMIT` | 20 | Questions per visit |
+| `GURU_PASSWORD` | none | If set, the page asks for this before answering |
+
+Also set a monthly spend limit for the key's workspace in the Anthropic Console (Settings,
+Limits). The app's own limits reset when Streamlit restarts the app, so the Console limit is
+the one that caps the bill. Requests ask the API to retry on a fallback model if a safety
+classifier declines one (`fallbacks: "default"`).
 - GitHub turns off scheduled workflows in a public repo after 60 days with no repository
   activity; re-enable it from the Actions tab if that happens.
 

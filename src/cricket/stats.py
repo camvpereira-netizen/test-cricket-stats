@@ -30,6 +30,10 @@ class Filters:
     venue_contains: str | None = None    # substring of venue or city, e.g. "Lord's"
     date_from: date | None = None
     date_to: date | None = None
+    host_country: str | list[str] | None = None  # where the Test was played, e.g. "India"
+    team: str | None = None              # the player's own side
+    innings_no: int | None = None        # 1 to 4: innings of the match
+    venue_type: str | None = None        # "home", "away" or "neutral" for the player's side
 
     def match_sql(self) -> tuple[str, list]:
         """SQL predicate on alias m (matches) plus params."""
@@ -38,8 +42,10 @@ class Filters:
             clauses.append("(m.team1 = ? OR m.team2 = ?)")
             params += [self.opponent, self.opponent]
         if self.venue_contains:
-            clauses.append("(m.venue ILIKE ? OR m.city ILIKE ?)")
-            like = f"%{self.venue_contains}%"
+            # apostrophes ignored, so "Lords" finds "Lord's"
+            clauses.append("(replace(m.venue, '''', '') ILIKE ? OR replace(m.city, '''', '') ILIKE ?)")
+            plain = self.venue_contains.replace("'", "").replace("’", "")
+            like = f"%{plain}%"
             params += [like, like]
         if self.date_from:
             clauses.append("m.start_date >= ?")
@@ -47,7 +53,37 @@ class Filters:
         if self.date_to:
             clauses.append("m.start_date <= ?")
             params.append(self.date_to)
+        if self.host_country:
+            hosts = [self.host_country] if isinstance(self.host_country, str) else list(self.host_country)
+            clauses.append("list_contains(?, m.country)")
+            params.append(hosts)
         return " AND ".join(clauses), params
+
+    def row_sql(self, alias: str = "s", innings: bool = True) -> tuple[str, list]:
+        """SQL predicate on a player's rows (alias has team, and opponent if innings) plus params.
+
+        For appearances (innings=False) the opponent is "not the player's own team" and the
+        innings filter does not apply.
+        """
+        if self.venue_type not in (None, "home", "away", "neutral"):
+            raise ValueError("venue_type must be home, away or neutral")
+        clauses, params = [], []
+        if self.opponent:
+            clauses.append(f"{alias}.opponent = ?" if innings else f"{alias}.team <> ?")
+            params.append(self.opponent)
+        if self.team:
+            clauses.append(f"{alias}.team = ?")
+            params.append(self.team)
+        if self.innings_no and innings:
+            clauses.append(f"{alias}.innings_no = ?")
+            params.append(self.innings_no)
+        if self.venue_type == "home":
+            clauses.append(f"m.home_team = {alias}.team")
+        elif self.venue_type == "away":
+            clauses.append(f"m.home_team <> {alias}.team")
+        elif self.venue_type == "neutral":
+            clauses.append("m.home_team IS NULL AND m.country IS NOT NULL")
+        return "".join(f" AND {c}" for c in clauses), params
 
 
 def connect(db_path: str) -> duckdb.DuckDBPyConnection:
@@ -210,24 +246,23 @@ def career_leaderboard(con, order_by: str = "runs", min_matches: int = 1, min_wi
 def _batting_innings(con, player_id: str, f: Filters) -> pd.DataFrame:
     """One row per batting innings: runs, balls, fours, sixes (NULL if unknown), out flag."""
     pred, params = f.match_sql()
-    opp = "AND s.opponent = ?" if f.opponent else ""
+    rows, row_params = f.row_sql()
     sql = f"""
     SELECT s.match_id, m.start_date, s.innings_no, s.runs, s.balls, s.fours, s.sixes,
            s.out::INT AS out
     FROM batting_scorecard s JOIN matches m USING (match_id)
-    WHERE {pred} AND s.player_id = ? {opp}
+    WHERE {pred} AND s.player_id = ? {rows}
     ORDER BY m.start_date, s.innings_no
     """
-    return con.execute(sql, params + [player_id] + ([f.opponent] if f.opponent else [])).df()
+    return con.execute(sql, params + [player_id] + row_params).df()
 
 
 def _matches_played(con, player_id: str, f: Filters) -> int:
     pred, params = f.match_sql()
-    opp = "AND a.team <> ?" if f.opponent else ""
-    p = params + [player_id] + ([f.opponent] if f.opponent else [])
+    rows, row_params = f.row_sql("a", innings=False)
     return con.execute(
         f"""SELECT count(DISTINCT a.match_id) FROM appearances a JOIN matches m USING (match_id)
-            WHERE {pred} AND a.player_id = ? {opp}""", p
+            WHERE {pred} AND a.player_id = ? {rows}""", params + [player_id] + row_params
     ).fetchone()[0]
 
 
@@ -264,15 +299,15 @@ def batting_summary(con, player_id: str, f: Filters | None = None) -> dict:
 def _bowling_innings(con, player_id: str, f: Filters) -> pd.DataFrame:
     """One row per innings bowled in: legal balls (NULL if unknown), runs conceded, wickets."""
     pred, params = f.match_sql()
-    opp = "AND s.opponent = ?" if f.opponent else ""
+    rows, row_params = f.row_sql()
     sql = f"""
     SELECT s.match_id, m.start_date, s.innings_no, s.balls AS legal_balls, s.runs_conceded,
            s.wickets
     FROM bowling_scorecard s JOIN matches m USING (match_id)
-    WHERE {pred} AND s.player_id = ? {opp}
+    WHERE {pred} AND s.player_id = ? {rows}
     ORDER BY m.start_date, s.innings_no
     """
-    return con.execute(sql, params + [player_id] + ([f.opponent] if f.opponent else [])).df()
+    return con.execute(sql, params + [player_id] + row_params).df()
 
 
 def bowling_summary(con, player_id: str, f: Filters | None = None) -> dict:
@@ -372,6 +407,12 @@ def _split(inns: pd.DataFrame, by: str) -> pd.DataFrame:
     return g.reset_index()[[by] + cols]
 
 
+def host_countries(con) -> list[str]:
+    """Countries Tests have been played in (from venues.py), for the host country filter."""
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT country FROM matches WHERE country IS NOT NULL ORDER BY country").fetchall()]
+
+
 def teams(con) -> list[str]:
     return [r[0] for r in con.execute(
         "SELECT DISTINCT team FROM (SELECT team1 AS team FROM matches UNION SELECT team2 FROM matches) "
@@ -424,7 +465,7 @@ def batting_leaderboard(con, f: Filters | None = None, order_by: str = "runs",
         raise ValueError(order_by)
     f = f or Filters()
     pred, params = f.match_sql()
-    opp = "AND s.opponent = ?" if f.opponent else ""
+    rows, row_params = f.row_sql()
     sql = f"""
     SELECT s.player_id, any_value(s.player) AS player, any_value(s.team) AS team,
            count(*) AS innings, sum(s.runs) AS runs, sum(s.out::INT) AS outs,
@@ -433,11 +474,11 @@ def batting_leaderboard(con, f: Filters | None = None, order_by: str = "runs",
                  / nullif(sum(s.balls), 0), 2) AS strike_rate,
            count(*) FILTER (WHERE s.runs >= 100) AS hundreds
     FROM batting_scorecard s JOIN matches m USING (match_id)
-    WHERE {pred} AND s.player_id IS NOT NULL {opp}
+    WHERE {pred} AND s.player_id IS NOT NULL {rows}
     GROUP BY s.player_id HAVING count(*) >= ?
     ORDER BY {order_by} DESC NULLS LAST LIMIT ?
     """
-    return con.execute(sql, params + ([f.opponent] if f.opponent else []) + [min_innings, limit]).df()
+    return con.execute(sql, params + row_params + [min_innings, limit]).df()
 
 
 def bowling_leaderboard(con, f: Filters | None = None, order_by: str = "wickets",
@@ -452,7 +493,7 @@ def bowling_leaderboard(con, f: Filters | None = None, order_by: str = "wickets"
     direction = "DESC" if order_by == "wickets" else "ASC"
     f = f or Filters()
     pred, params = f.match_sql()
-    opp = "AND s.opponent = ?" if f.opponent else ""
+    rows, row_params = f.row_sql()
     sql = f"""
     WITH b AS (
         SELECT s.player_id, any_value(s.player) AS player, any_value(s.team) AS team,
@@ -460,7 +501,7 @@ def bowling_leaderboard(con, f: Filters | None = None, order_by: str = "wickets"
                sum(s.runs_conceded) FILTER (WHERE s.balls IS NOT NULL) AS timed_runs,
                sum(s.wickets) FILTER (WHERE s.balls IS NOT NULL) AS timed_wickets
         FROM bowling_scorecard s JOIN matches m USING (match_id)
-        WHERE {pred} AND s.player_id IS NOT NULL {opp} GROUP BY s.player_id
+        WHERE {pred} AND s.player_id IS NOT NULL {rows} GROUP BY s.player_id
     )
     SELECT player_id, player, team, balls // 6 || '.' || balls % 6 AS overs,
            runs AS runs_conceded, wickets,
@@ -470,7 +511,7 @@ def bowling_leaderboard(con, f: Filters | None = None, order_by: str = "wickets"
     FROM b WHERE wickets >= ?
     ORDER BY {order_by} {direction} NULLS LAST LIMIT ?
     """
-    return con.execute(sql, params + ([f.opponent] if f.opponent else []) + [min_wickets, limit]).df()
+    return con.execute(sql, params + row_params + [min_wickets, limit]).df()
 
 def recent_results(con, limit: int = 10) -> pd.DataFrame:
     """The latest Tests in the database, newest first, with the result in words."""

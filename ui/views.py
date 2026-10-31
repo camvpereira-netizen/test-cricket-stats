@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from cricket import scorecards, stats
+from cricket import guru, questions, scorecards, stats
+from ui import common
 from ui.common import Ctx, models, player_picker, show_probs, tidy
 
 
@@ -203,16 +204,93 @@ def accuracy(ctx: Ctx):
     st.json(m["player"].metrics)
 
 
+GURU_TITLE = "Ask the guru"  # working name until Cam picks one
+GURU_EXAMPLES = [
+    "Who has the best batting average in the fourth innings in Asia since 2010, minimum 15 innings?",
+    "How does Joe Root's average in Australia compare with Steve Smith's in England?",
+    "Which bowlers have the most wickets at Lord's?",
+    "What is India's record against Australia since 2000?",
+]
+TOOL_LABELS = {t["name"]: t["name"].replace("_", " ").capitalize() for t in guru.TOOLS}
+
+
+def _show_guru_answer(a: guru.Answer, by_claude: bool):
+    st.markdown(a.text)
+    if a.steps:
+        with st.expander(f"How the guru worked this out ({len(a.steps)} lookups)"):
+            st.caption("Each lookup runs one of the site's tested stat functions. The guru cannot "
+                       "write its own database queries.")
+            for step in a.steps:
+                args = ", ".join(f"{k}={v}" for k, v in step.args.items()) or "no inputs"
+                st.markdown(f"**{TOOL_LABELS.get(step.tool, step.tool)}** ({args})")
+                if step.error:
+                    st.warning(step.error)
+                elif step.table is not None:
+                    st.dataframe(tidy(step.table), hide_index=True, width="stretch")
+    st.caption(f"Answered by Claude: {a.input_tokens:,} input and {a.output_tokens:,} output tokens"
+               if by_claude else "Answered by the built-in question reader (free, no AI)")
+
+
 def ask(ctx: Ctx):
-    st.title("Ask a question")
-    st.info("Coming in phase 3 of the plan: ask in plain English and an agent answers from this "
-            "database, showing the query it ran. Every number is re-checked before it is shown.",
-            icon=":material/construction:")
-    st.write("Questions it is being built to answer:")
-    st.markdown("- Who has the best batting average in fourth innings in Asia since 2010, minimum 15 innings?\n"
-                "- How does Root's average in Australia compare with Smith's in England?\n"
-                "- Which bowlers have taken five-fors in both innings of a Test at Lord's?\n"
-                "- What are India's chances in the next Test against England in Chennai?")
+    st.title(GURU_TITLE)
+    st.write("Ask about men's Test cricket in plain English. Common questions are read by the site "
+             "itself for free; others go to Claude if it is set up. Either way the numbers come from "
+             "the same tested stat functions as the rest of the site, and every lookup is shown.")
+    st.caption("Player stats with filters cover Tests with scorecards (mostly 2001 on); whole-career "
+               "totals cover every Test. Check the lookups if an answer looks wrong.")
+    history = st.session_state.setdefault("guru_history", [])
+    for q, a, by_claude in history:
+        with st.chat_message("user"):
+            st.write(q)
+        with st.chat_message("assistant"):
+            _show_guru_answer(a, by_claude)
+    if not history:
+        st.write("Try one of these:")
+        for i, q in enumerate(GURU_EXAMPLES):
+            if st.button(q, key=f"guru_ex_{i}"):
+                st.session_state["guru_pending"] = q
+    question = st.chat_input("Ask a question", max_chars=guru.MAX_QUESTION_CHARS) \
+        or st.session_state.pop("guru_pending", None)
+    if not question:
+        return
+    with st.chat_message("user"):
+        st.write(question)
+    with st.chat_message("assistant"):
+        answer, by_claude = questions.answer(ctx.con, question), False
+        if answer is None:
+            answer, by_claude = _ask_claude(ctx, question, history)
+            if answer is None:
+                return
+        _show_guru_answer(answer, by_claude)
+    history.append((question, answer, by_claude))
+
+
+def _ask_claude(ctx: Ctx, question: str, history: list):
+    """The Claude guru, for questions the built-in reader doesn't understand. (answer, True) or (None, False)."""
+    client, why = common.guru_client()
+    password = common.secret("GURU_PASSWORD")
+    if client is None or (password and not st.session_state.get("guru_unlocked")):
+        st.write("I couldn't read that question. Try naming a player, team or stat, for example: "
+                 "\"most wickets in India since 2015\", \"Root's average against Australia\", or "
+                 "\"England's record at Lord's\".")
+        if password and client is not None:
+            if st.text_input("Password for harder questions (uses Claude)", type="password",
+                             key="guru_pw") == password:
+                st.session_state["guru_unlocked"] = True
+                st.rerun()
+        return None, False
+    if blocked := common.guru_take_question():
+        st.warning(blocked)
+        return None, False
+    with st.spinner("Asking Claude..."):
+        try:
+            return guru.ask(ctx.con, question, client,
+                            model=common.secret("GURU_MODEL", guru.DEFAULT_MODEL),
+                            effort=common.secret("GURU_EFFORT", guru.DEFAULT_EFFORT),
+                            history=[(q, a.text) for q, a, _ in history[-3:] if a.ok]), True
+        except Exception as e:  # API errors: bad key, spend limit reached, outage
+            st.error(f"Claude couldn't answer just now ({type(e).__name__}). Please try again later.")
+            return None, False
 
 
 def games(ctx: Ctx):
