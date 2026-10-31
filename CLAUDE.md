@@ -16,7 +16,9 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
   `batting_scorecard` / `bowling_scorecard` (NULL balls, fours, sixes where a source lacks
   them; rates use only innings where balls are known). Any player stat shown must say it
   covers matches with scorecards, not a full career. Whole-career totals come only from
-  `player_careers` and must be labelled as such (filters can't apply to them).
+  `player_careers` or `stats.test_career` (which counts from ball-by-ball only when every Test
+  of the player's is there and agrees with the list) and must be labelled as such (filters
+  can't apply to them).
 - New older-match sources go through `scorecards.add_matches`, which skips matches already present.
 
 ## Stat definitions (keep consistent with official scoring)
@@ -32,6 +34,8 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
 - `src/cricket/wikipedia.py` — season-page parser, repairs and England cross-check.
 - `src/cricket/careers.py` — every Test player's career totals from Wikipedia's per-team lists
   (`player_careers`; ids are Cricsheet's where linked, else `wp:<team>:<cap>`).
+- `src/cricket/infobox.py` — fills `player_careers` gaps (100s/50s, 5w/10w, balls) from each
+  player's article infobox, only where its matches and runs equal the list's.
 - `src/cricket/wikidata.py` — full player names from Wikidata (CC0), matched by register ids.
 - `src/cricket/scorecards.py` — adds result-only / scorecard-only matches; coverage table.
 - `src/cricket/stats.py` — all stat SQL lives here; UI and future MCP server only call these functions.

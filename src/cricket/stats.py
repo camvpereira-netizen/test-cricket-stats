@@ -193,6 +193,12 @@ def _has_table(con, name: str) -> bool:
                        [name]).fetchall()[0][0] > 0
 
 
+CAREER_COLUMNS = ["team", "cap", "name", "first_year", "last_year", "matches", "innings", "not_outs",
+                  "runs", "high_score", "batting_average", "hundreds", "fifties", "balls", "maidens",
+                  "runs_conceded", "wickets", "best_bowling", "bowling_average", "five_wickets",
+                  "ten_wickets", "catches", "stumpings", "as_of"]
+
+
 def career_totals(con, player_id: str) -> pd.DataFrame:
     """Whole-career figures for each team the player was capped by, from Wikipedia's lists.
 
@@ -200,11 +206,146 @@ def career_totals(con, player_id: str) -> pd.DataFrame:
     """
     if not _has_table(con, "player_careers"):
         return pd.DataFrame()
+    df = con.execute("SELECT * FROM player_careers WHERE player_id = ? ORDER BY first_year",
+                     [player_id]).df()
+    return df.reindex(columns=CAREER_COLUMNS)  # older builds lack five_wickets and ten_wickets
+
+
+FROM_BALLS = "Ball-by-ball (every Test)"
+FROM_LISTS = "Wikipedia"
+
+
+def _scorecard_careers(con, player_id: str) -> pd.DataFrame:
+    """Per team, the player's Test figures from ball-by-ball matches only (all columns known)."""
     return con.execute(
-        """SELECT team, cap, name, first_year, last_year, matches, innings, not_outs, runs,
-                  high_score, batting_average, hundreds, fifties, balls, maidens, runs_conceded,
-                  wickets, best_bowling, bowling_average, catches, stumpings, as_of
-           FROM player_careers WHERE player_id = ? ORDER BY first_year""", [player_id]).df()
+        """
+        WITH bb AS (SELECT match_id, start_date FROM matches WHERE detail = 'ball_by_ball'),
+        apps AS (SELECT a.team, count(*) AS matches, year(min(start_date)) AS first_year,
+                        year(max(start_date)) AS last_year
+                 FROM appearances a JOIN bb USING (match_id) WHERE a.player_id = $p GROUP BY a.team),
+        bat AS (SELECT team, count(*) AS innings, count(*) - sum(out::INT) AS not_outs,
+                       sum(runs)::BIGINT AS runs, sum(balls)::BIGINT AS balls_faced,
+                       sum(fours)::BIGINT AS fours, sum(sixes)::BIGINT AS sixes,
+                       count(*) FILTER (WHERE runs >= 100) AS hundreds,
+                       count(*) FILTER (WHERE runs >= 50 AND runs < 100) AS fifties,
+                       arg_max(runs::VARCHAR || CASE WHEN out THEN '' ELSE '*' END,
+                               runs * 2 + CASE WHEN out THEN 0 ELSE 1 END) AS high_score
+                FROM batting_scorecard JOIN bb USING (match_id) WHERE player_id = $p GROUP BY team),
+        bowl_inns AS (SELECT s.* FROM bowling_scorecard s JOIN bb USING (match_id) WHERE player_id = $p),
+        bowl_match AS (SELECT team, match_id, sum(wickets) AS w, sum(runs_conceded) AS r
+                       FROM bowl_inns GROUP BY ALL),
+        bowl AS (SELECT team, count(*) AS bowl_innings, sum(balls)::BIGINT AS balls,
+                        sum(maidens)::BIGINT AS maidens, sum(runs_conceded)::BIGINT AS runs_conceded,
+                        sum(wickets)::BIGINT AS wickets,
+                        arg_min(wickets || '/' || runs_conceded, runs_conceded - wickets * 10000) AS best_bowling,
+                        count(*) FILTER (WHERE wickets = 4) AS four_wickets,
+                        count(*) FILTER (WHERE wickets >= 5) AS five_wickets
+                 FROM bowl_inns GROUP BY team),
+        bbm AS (SELECT team, arg_min(w || '/' || r, r - w * 10000) AS best_match,
+                       count(*) FILTER (WHERE w >= 10) AS ten_wickets
+                FROM bowl_match GROUP BY team),
+        -- catches and stumpings by the fielding side's XI (a substitute isn't in the XI, so
+        -- isn't credited); caught and bowled is a catch for the bowler
+        dismissals AS (
+            SELECT w.match_id, i.bowling_team AS team, trim(f.name) AS fielder, w.kind
+            FROM wickets w JOIN innings i USING (match_id, innings_no)
+                 JOIN bb USING (match_id), unnest(string_split(w.fielders, ', ')) AS f(name)
+            WHERE w.kind IN ('caught', 'stumped') AND w.fielders <> ''
+            UNION ALL
+            SELECT w.match_id, i.bowling_team, w.bowler, 'caught'
+            FROM wickets w JOIN innings i USING (match_id, innings_no) JOIN bb USING (match_id)
+            WHERE w.kind = 'caught and bowled'),
+        field AS (SELECT a.team, count(*) FILTER (WHERE d.kind = 'caught') AS catches,
+                         count(*) FILTER (WHERE d.kind = 'stumped') AS stumpings
+                  FROM dismissals d JOIN appearances a
+                    ON a.match_id = d.match_id AND a.team = d.team AND a.player = d.fielder
+                  WHERE a.player_id = $p GROUP BY a.team)
+        SELECT * FROM apps LEFT JOIN bat USING (team) LEFT JOIN bowl USING (team)
+                 LEFT JOIN bbm USING (team) LEFT JOIN field USING (team)
+        """, {"p": player_id}).df()
+
+
+def _num(v):
+    return None if v is None or pd.isna(v) else v
+
+
+def _div(a, b, scale: float = 1, places: int = 2):
+    a, b = _num(a), _num(b)
+    return round(scale * a / b, places) if a is not None and b else None
+
+
+def test_career(con, player_id: str) -> dict[str, pd.DataFrame]:
+    """Whole-career Test figures in three tables, "batting", "bowling" and "other", one row per team.
+
+    Laid out like a Cricinfo profile's Tests row. Where every Test the player played for a team
+    is in the ball-by-ball data (and agrees with the list on runs and wickets), all of it is
+    worked out here from the deliveries. Otherwise
+    the row comes from Wikipedia (the team's list, gaps filled from the player's article), and
+    columns no source has for those years are None: balls faced, strike rate, fours, sixes,
+    bowling innings, best in a match and 4-wicket innings (and innings and not outs for teams
+    whose list lacks them). The "source" column says which.
+    """
+    lists = career_totals(con, player_id)
+    lists = lists.set_index("team") if not lists.empty else pd.DataFrame()
+    cards = _scorecard_careers(con, player_id).set_index("team")
+    bat, bowl, other = [], [], []
+    for team in list(dict.fromkeys([*lists.index, *cards.index])):
+        lr = lists.loc[team] if team in lists.index else None
+        cr = cards.loc[team] if team in cards.index else None
+        # every Test is ball-by-ball if there are as many as the list has (more if the list is
+        # behind); with the same count the runs and wickets must agree too, else a Test is
+        # missing or misattributed and the list is trusted
+        full = cr is not None and (lr is None or cr.matches > (_num(lr.matches) or 0) or (
+            cr.matches == lr.matches
+            and (_num(cr.runs) or 0) == (_num(lr.runs) or 0)
+            and (_num(cr.wickets) or 0) == (_num(lr.wickets) or 0)))
+        if full:
+            outs = _num(cr.innings) and cr.innings - cr.not_outs
+            bat.append({"team": team, "matches": cr.matches, "innings": _num(cr.innings) or 0,
+                        "not_outs": _num(cr.not_outs), "runs": _num(cr.runs), "high_score": _num(cr.high_score),
+                        "average": _div(cr.runs, outs), "balls_faced": _num(cr.balls_faced),
+                        "strike_rate": _div(cr.runs, cr.balls_faced, 100), "hundreds": _num(cr.hundreds),
+                        "fifties": _num(cr.fifties), "fours": _num(cr.fours), "sixes": _num(cr.sixes),
+                        "source": FROM_BALLS})
+            bowl.append({"team": team, "matches": cr.matches, "innings": _num(cr.bowl_innings) or 0,
+                         "balls": _num(cr.balls) or 0, "runs": _num(cr.runs_conceded) or 0,
+                         "wickets": _num(cr.wickets) or 0, "best_innings": _num(cr.best_bowling),
+                         "best_match": _num(cr.best_match), "average": _div(cr.runs_conceded, cr.wickets),
+                         "economy": _div(cr.runs_conceded, cr.balls, 6),
+                         "strike_rate": _div(cr.balls, cr.wickets, 1, 1),
+                         "four_wickets": _num(cr.four_wickets) or 0, "five_wickets": _num(cr.five_wickets) or 0,
+                         "ten_wickets": _num(cr.ten_wickets) or 0, "source": FROM_BALLS})
+            fielding = {"catches": _num(cr.catches) or 0, "stumpings": _num(cr.stumpings) or 0}
+        else:
+            bowled = bool(_num(lr.balls)) or bool(_num(lr.wickets))
+            # counts the sources lack can still be certain: no hundreds with a top score of 99
+            hs = int(re.sub(r"\D", "", str(lr.high_score)) or 0) if _num(lr.high_score) else None
+            best = int(str(lr.best_bowling).split("/")[0]) if re.match(r"\d+/", str(lr.best_bowling)) else 0
+            wkts = _num(lr.wickets) or 0
+            bat.append({"team": team, "matches": _num(lr.matches), "innings": _num(lr.innings),
+                        "not_outs": _num(lr.not_outs), "runs": _num(lr.runs), "high_score": _num(lr.high_score),
+                        "average": _num(lr.batting_average), "balls_faced": None, "strike_rate": None,
+                        "hundreds": _num(lr.hundreds) if hs is None or hs >= 100 or _num(lr.hundreds) else 0,
+                        "fifties": _num(lr.fifties) if hs is None or hs >= 50 or _num(lr.fifties) else 0,
+                        "fours": None, "sixes": None, "source": FROM_LISTS})
+            bowl.append({"team": team, "matches": _num(lr.matches), "innings": None,
+                         "balls": _num(lr.balls), "runs": _num(lr.runs_conceded),
+                         "wickets": wkts, "best_innings": _num(lr.best_bowling) if bowled else None,
+                         "best_match": None, "average": _num(lr.bowling_average),
+                         "economy": _div(lr.runs_conceded, lr.balls, 6),
+                         "strike_rate": _div(lr.balls, lr.wickets, 1, 1),
+                         "four_wickets": 0 if best < 4 else None,
+                         "five_wickets": 0 if best < 5 else _num(lr.five_wickets),
+                         "ten_wickets": 0 if wkts < 10 else _num(lr.ten_wickets), "source": FROM_LISTS})
+            fielding = {"catches": _num(lr.catches) or 0, "stumpings": _num(lr.stumpings) or 0}
+        other.append({"team": team, "cap": _num(lr.cap) if lr is not None else None,
+                      "first_year": _num(lr.first_year) if lr is not None else cr.first_year,
+                      "last_year": max((x for x in [_num(lr.last_year) if lr is not None else None,
+                                                    cr.last_year if cr is not None else None] if x),
+                                       default=None),
+                      **fielding,
+                      "figures_as_of": (_num(lr.as_of) if lr is not None and not full else "latest Test")})
+    return {"batting": pd.DataFrame(bat), "bowling": pd.DataFrame(bowl), "other": pd.DataFrame(other)}
 
 
 CAREER_ORDER = {"runs": "runs DESC", "batting_average": "batting_average DESC",
