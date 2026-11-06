@@ -130,16 +130,22 @@ def runs_from_average(average, wickets):
 def fill(careers: pd.DataFrame, boxes: dict[str, dict | None]) -> pd.DataFrame:
     """Fill gaps in the list rows from matching infoboxes; never overwrite a list value.
 
-    Adds infobox_used (the infobox agreed with the row on matches and runs). Runs conceded
-    missing from a list are worked out from the bowling average where only one total fits.
+    Adds infobox_used (the infobox agreed with the row on matches and runs), and the
+    infobox's own matches, runs and wickets as box_matches, box_runs and box_wickets whether
+    or not it agreed, so stats.test_career can use them to settle a list that disagrees with
+    the ball-by-ball data. Runs conceded missing from a list are worked out from the bowling
+    average where only one total fits.
     """
     df = careers.copy()
     for c in ("five_wickets", "ten_wickets"):
         if c not in df:
             df[c] = pd.array([None] * len(df), dtype="Int64")
     used = []
+    box_cols = {"box_matches": [], "box_runs": [], "box_wickets": []}
     for i, r in df.iterrows():
         box = boxes.get(r.wiki_title)
+        for c in box_cols:
+            box_cols[c].append(box.get(c[4:]) if box else None)
         ok = bool(box) and box["matches"] == r.matches and (
             pd.isna(r.runs) or box["runs"] in (None, r.runs))
         used.append(ok)
@@ -151,6 +157,8 @@ def fill(careers: pd.DataFrame, boxes: dict[str, dict | None]) -> pd.DataFrame:
         if pd.isna(df.at[i, "wickets"]) and box["wickets"] is not None:
             df.at[i, "wickets"] = box["wickets"]
     df["infobox_used"] = used
+    for c, values in box_cols.items():
+        df[c] = pd.array(values, dtype="Int64")
     missing = df.runs_conceded.isna()
     df.loc[missing, "runs_conceded"] = [runs_from_average(a, w) for a, w in
                                         zip(df.bowling_average[missing], df.wickets[missing])]
