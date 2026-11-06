@@ -63,7 +63,7 @@ def ensure_db() -> bool:
     stale = not DB.exists() or time.time() - DB.stat().st_mtime > DB_MAX_AGE_HOURS * 3600
     if url and stale:
         try:
-            with st.spinner("Fetching the latest data..."):
+            with st.spinner("Rolling the pitch: fetching the latest data..."):
                 download_db(url, DB)
         except requests.RequestException as e:
             if DB.exists():
@@ -131,18 +131,24 @@ def sidebar_filters(c) -> stats.Filters:
                          venue_contains=venue or None, date_from=d_from, date_to=d_to)
 
 
-def player_picker(c, label: str, key: str):
+def pick_player(c, label: str, key: str):
+    """A fuzzy name box and a pick list; the chosen find_players row, or None."""
     q = st.text_input(label, key=f"q_{key}", placeholder="e.g. Steve Smith, Root, Cummins")
     if not q:
         return None
     found = stats.find_players(c, q)
     if found.empty:
-        st.warning("No players found.")
+        st.warning("No players found. Check the spelling or try just the surname.")
         return None
     opts = {f"{r.player}{f' – {r.full_name}' if pd.notna(r.full_name) else ''} "
-            f"({r.team}, {r.first_year}–{r.last_year}, {r.matches} Tests)": r.player_id
-            for r in found.itertuples()}
-    return opts[st.selectbox("Select", list(opts), key=f"s_{key}")]
+            f"({r.team}, {r.first_year}–{r.last_year}, {r.matches} Tests)": i
+            for i, r in enumerate(found.itertuples())}
+    return found.iloc[opts[st.selectbox("Select", list(opts), key=f"s_{key}")]]
+
+
+def player_picker(c, label: str, key: str):
+    row = pick_player(c, label, key)
+    return None if row is None else row.player_id
 
 
 def show_probs(p: dict[str, float]):

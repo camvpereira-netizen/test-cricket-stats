@@ -144,3 +144,22 @@ def test_certain_zeros_from_lists(ccon):
     don = stats.test_career(c, "wp:australia:124")
     assert pd.isna(don["batting"].hundreds.iloc[0])  # 334 top score: needs the article
     assert (don["bowling"].four_wickets.iloc[0], don["bowling"].ten_wickets.iloc[0]) == (0, 0)
+
+
+def test_career_headline(con, ccon):
+    """Headline numbers for the player card: one team's row as is, two teams' rows added up."""
+    x = stats.career_headline(stats.test_career(con, "id_X"))
+    assert x == {"tests": 2, "runs": 60, "batting_average": 30.0, "wickets": 5, "bowling_average": 2.0}
+    don = stats.career_headline(stats.test_career(ccon[0], "wp:australia:124"))
+    assert (don["runs"], don["batting_average"], don["wickets"]) == (6996, 99.94, 2)
+    # capped by two teams: 600 + 240 runs, (15 - 3) + (8 - 0) = 20 outs -> 42.0;
+    # 4 + 6 wickets for 200 + 100 runs -> 30.0
+    two = {"batting": pd.DataFrame({"matches": [10, 5], "innings": [15, 8], "not_outs": [3, 0],
+                                    "runs": [600, 240], "average": [50.0, 30.0]}),
+           "bowling": pd.DataFrame({"runs": [200, 100], "wickets": [4, 6], "average": [50.0, 16.67]})}
+    assert stats.career_headline(two) == {"tests": 15, "runs": 840, "batting_average": 42.0,
+                                          "wickets": 10, "bowling_average": 30.0}
+    two["batting"]["not_outs"] = [3, None]  # a list without not outs: no combined average
+    assert stats.career_headline(two)["batting_average"] is None
+    empty = {"batting": pd.DataFrame(), "bowling": pd.DataFrame()}
+    assert stats.career_headline(empty)["tests"] == 0

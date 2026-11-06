@@ -31,9 +31,12 @@ def test_every_page_renders(app):
 
 def test_player_and_predict_pages(app):
     app.switch_page("app_pages/player.py").run()
-    assert app.selectbox(key="f_opponent")  # stats pages get the sidebar filters
+    assert not [s for s in app.selectbox if s.key == "f_opponent"]  # plain search: no filters
     app.text_input(key="q_one").set_value("P3").run()
     assert not app.exception, app.exception
+    assert [m.label for m in app.metric] == ["Tests", "Runs", "Batting avg", "Wickets", "Bowling avg"]
+    app.switch_page("app_pages/teams.py").run()
+    assert app.selectbox(key="f_opponent")  # the other stats pages keep them
     app.switch_page("app_pages/predict.py").run()
     assert len(app.metric) >= 3  # match-result probabilities
     app.radio(key="pred_kind").set_value("Fourth-innings chase").run()

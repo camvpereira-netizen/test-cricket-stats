@@ -13,9 +13,10 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 from cricket import ATTRIBUTION, stats  # noqa: E402
-from ui import common, views  # noqa: E402
+from ui import common, theme, views  # noqa: E402
 
 st.set_page_config(page_title="Test Cricket Stats", page_icon=":material/sports_cricket:", layout="wide")
+theme.apply()
 
 if not common.ensure_db():
     st.error("No database yet. Run `PYTHONPATH=src python -m cricket.ingest --wikipedia` first "
@@ -29,7 +30,9 @@ def page(name: str, title: str, icon: str, default: bool = False) -> st.Page:
     return p
 
 
-STATS_PAGES = ["player", "compare", "teams", "leaderboards"]
+# Pages with the sidebar filters. Player search is a plain lookup; questions with filters go to
+# the guru (Ask page).
+STATS_PAGES = ["compare", "teams", "leaderboards"]
 nav = st.navigation({
     "": [page("home", "Home", "home", default=True)],
     "Stats": [page("player", "Player search", "person_search"),

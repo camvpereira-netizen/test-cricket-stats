@@ -23,14 +23,18 @@ streamlit run app.py                        # opens the web app at http://localh
 ## The web app
 
 Pages sit in a menu along the top. Each page is a file in `app_pages/` that calls one function in
-`ui/views.py`; shared pieces (database, cached models, filters) are in `ui/common.py`.
+`ui/views.py`; shared pieces (database, cached models, filters) are in `ui/common.py`. The Test
+cricket look (cream whites, red ball, green outfield, scoreboard numbers) is the colours in
+`.streamlit/config.toml` plus banners and scoreboard CSS in `ui/theme.py`; `tests/test_theme.py`
+checks every text colour meets WCAG AA contrast.
 
 | Menu | Page | What it shows |
 |---|---|---|
 | Home | Home | Number of Tests, latest Test, when the data was built, the latest results |
-| Stats | Players, Compare, Teams, Leaderboards | Player summaries and splits, side-by-side comparison, team records and head-to-head with ratings, leaderboards. Filters (opponent, venue, dates) are in the sidebar on these pages |
+| Stats | Player search | A plain lookup: a player's whole Test career (batting, bowling, fielding) with scoreboard headline numbers. No filters; questions with filters or splits go to the guru |
 | Stats | Ask the guru | Plain-English questions. Common ones are read for free by `questions.py`; others go to Claude if a key is set. Both call the tested functions in `stats.py` (never raw SQL) and show each lookup |
-| Predict | Predictions, Model accuracy | Match result, fourth-innings chase, a player's next innings, and how each model scores on held-out Tests |
+| Coming soon | Compare, Teams, Leaderboards | Side-by-side comparison, team records and head-to-head with ratings, leaderboards. Filters (opponent, venue, dates) are in the sidebar on these pages |
+| Coming soon | Predictions, Model accuracy | Match result, fourth-innings chase, a player's next innings, and how each model scores on held-out Tests |
 | Coming soon | Games | Placeholder for games (phase 4) |
 | About | About the data | Coverage by decade and level of detail |
 
