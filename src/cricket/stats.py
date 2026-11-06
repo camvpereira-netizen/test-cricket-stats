@@ -196,7 +196,8 @@ def _has_table(con, name: str) -> bool:
 CAREER_COLUMNS = ["team", "cap", "name", "first_year", "last_year", "matches", "innings", "not_outs",
                   "runs", "high_score", "batting_average", "hundreds", "fifties", "balls", "maidens",
                   "runs_conceded", "wickets", "best_bowling", "bowling_average", "five_wickets",
-                  "ten_wickets", "catches", "stumpings", "as_of"]
+                  "ten_wickets", "catches", "stumpings", "as_of", "box_matches", "box_runs",
+                  "box_wickets"]
 
 
 def career_totals(con, player_id: str) -> pd.DataFrame:
@@ -208,7 +209,7 @@ def career_totals(con, player_id: str) -> pd.DataFrame:
         return pd.DataFrame()
     df = con.execute("SELECT * FROM player_careers WHERE player_id = ? ORDER BY first_year",
                      [player_id]).df()
-    return df.reindex(columns=CAREER_COLUMNS)  # older builds lack five_wickets and ten_wickets
+    return df.reindex(columns=CAREER_COLUMNS)  # older builds lack five_wickets, ten_wickets, box_*
 
 
 FROM_BALLS = "Ball-by-ball (every Test)"
@@ -274,12 +275,21 @@ def _div(a, b, scale: float = 1, places: int = 2):
     return round(scale * a / b, places) if a is not None and b else None
 
 
+def _box_agrees(lr, cr) -> bool:
+    """The list row's infobox figures equal the ball-by-ball matches, runs and wickets."""
+    if _num(lr.get("box_matches")) is None or _num(lr.get("box_runs")) is None:
+        return False
+    return (_num(lr.box_matches) == cr.matches and _num(lr.box_runs) == (_num(cr.runs) or 0)
+            and (_num(lr.get("box_wickets")) or 0) == (_num(cr.wickets) or 0))
+
+
 def test_career(con, player_id: str) -> dict[str, pd.DataFrame]:
     """Whole-career Test figures in three tables, "batting", "bowling" and "other", one row per team.
 
     Laid out like a Cricinfo profile's Tests row. Where every Test the player played for a team
-    is in the ball-by-ball data (and agrees with the list on runs and wickets), all of it is
-    worked out here from the deliveries. Otherwise
+    is in the ball-by-ball data (and agrees with the list on runs and wickets, or the player's
+    article infobox agrees with the deliveries), all of it is worked out here from the
+    deliveries. Otherwise
     the row comes from Wikipedia (the team's list, gaps filled from the player's article), and
     columns no source has for those years are None: balls faced, strike rate, fours, sixes,
     bowling innings, best in a match and 4-wicket innings (and innings and not outs for teams
@@ -294,11 +304,13 @@ def test_career(con, player_id: str) -> dict[str, pd.DataFrame]:
         cr = cards.loc[team] if team in cards.index else None
         # every Test is ball-by-ball if there are as many as the list has (more if the list is
         # behind); with the same count the runs and wickets must agree too, else a Test is
-        # missing or misattributed and the list is trusted
+        # missing or misattributed and the list is trusted, unless the player's article
+        # infobox agrees with the deliveries on all three (then the list row is the one wrong)
         full = cr is not None and (lr is None or cr.matches > (_num(lr.matches) or 0) or (
             cr.matches == lr.matches
-            and (_num(cr.runs) or 0) == (_num(lr.runs) or 0)
-            and (_num(cr.wickets) or 0) == (_num(lr.wickets) or 0)))
+            and (((_num(cr.runs) or 0) == (_num(lr.runs) or 0)
+                  and (_num(cr.wickets) or 0) == (_num(lr.wickets) or 0))
+                 or _box_agrees(lr, cr))))
         if full:
             outs = _num(cr.innings) and cr.innings - cr.not_outs
             bat.append({"team": team, "matches": cr.matches, "innings": _num(cr.innings) or 0,

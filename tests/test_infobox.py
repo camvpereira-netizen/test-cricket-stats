@@ -78,6 +78,10 @@ def test_fill_only_from_a_matching_infobox():
     assert grace.runs_conceded == 236  # from the average, as England's list has no runs conceded
     assert grace.balls == 666  # the list's own value is kept
     assert not filled.loc[655].infobox_used and pd.isna(filled.loc[655].hundreds)  # no article given
+    # the infobox's own matches, runs and wickets are kept even when it didn't agree
+    stale_row = infobox.fill(eng, {"W. G. Grace": stale}).set_index("cap").loc[24]
+    assert not stale_row.infobox_used and (stale_row.box_matches, stale_row.box_runs) == (21, 1098)
+    assert stale_row.box_wickets == 9 and pd.isna(filled.loc[655].box_matches)
     skipped = infobox.fill(eng, {"W. G. Grace": stale}).set_index("cap").loc[24]
     assert not skipped.infobox_used and pd.isna(skipped.hundreds)
 
@@ -116,6 +120,17 @@ def test_test_career_from_lists(ccon):
     # Bob B1's one Test is in the ball-by-ball data (no runs, one wicket); the list row says
     # 10 runs and no wickets, so a Test must be missing or misattributed: the list is trusted
     assert stats.test_career(c, "id_B1")["bowling"].source.iloc[0] == stats.FROM_LISTS
+    # the article's infobox settles it: if it matches the deliveries (1 Test, 0 runs, 1 wicket)
+    # the list row is the wrong one; if it matches the list, or is stale, the list stays
+    c.execute("ALTER TABLE player_careers ADD COLUMN box_matches BIGINT")
+    c.execute("ALTER TABLE player_careers ADD COLUMN box_runs BIGINT")
+    c.execute("ALTER TABLE player_careers ADD COLUMN box_wickets BIGINT")
+    for box, source in (((1, 10, 0), stats.FROM_LISTS), ((2, 0, 1), stats.FROM_LISTS),
+                        ((1, 0, 1), stats.FROM_BALLS)):
+        c.execute("UPDATE player_careers SET box_matches = ?, box_runs = ?, box_wickets = ? "
+                  "WHERE player_id = 'id_B1'", list(box))
+        assert stats.test_career(c, "id_B1")["bowling"].source.iloc[0] == source, box
+    c.execute("UPDATE player_careers SET box_matches = NULL WHERE player_id = 'id_B1'")
     c.execute("UPDATE player_careers SET runs = 0, wickets = 1 WHERE player_id = 'id_B1'")
     b1 = stats.test_career(c, "id_B1")  # now they agree, so it is counted from the deliveries
     assert b1["bowling"].source.iloc[0] == stats.FROM_BALLS and b1["other"].cap.iloc[0] == 1
