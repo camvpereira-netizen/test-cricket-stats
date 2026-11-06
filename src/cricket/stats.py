@@ -34,6 +34,7 @@ class Filters:
     team: str | None = None              # the player's own side
     innings_no: int | None = None        # 1 to 4: innings of the match
     venue_type: str | None = None        # "home", "away" or "neutral" for the player's side
+    between: list[str] | None = None     # both sides of the match from this list, e.g. the Ashes
 
     def match_sql(self) -> tuple[str, list]:
         """SQL predicate on alias m (matches) plus params."""
@@ -42,11 +43,15 @@ class Filters:
             clauses.append("(m.team1 = ? OR m.team2 = ?)")
             params += [self.opponent, self.opponent]
         if self.venue_contains:
-            # apostrophes ignored, so "Lords" finds "Lord's"
-            clauses.append("(replace(m.venue, '''', '') ILIKE ? OR replace(m.city, '''', '') ILIKE ?)")
+            # apostrophes ignored, so "Lords" finds "Lord's"; "|" separates other names for the
+            # same ground ("gabba|brisbane cricket ground")
             plain = self.venue_contains.replace("'", "").replace("’", "")
-            like = f"%{plain}%"
-            params += [like, like]
+            alts = [a.strip() for a in plain.split("|") if a.strip()] or [plain]
+            ors = []
+            for alt in alts:
+                ors.append("replace(m.venue, '''', '') ILIKE ? OR replace(m.city, '''', '') ILIKE ?")
+                params += [f"%{alt}%", f"%{alt}%"]
+            clauses.append("(" + " OR ".join(ors) + ")")
         if self.date_from:
             clauses.append("m.start_date >= ?")
             params.append(self.date_from)
@@ -57,6 +62,9 @@ class Filters:
             hosts = [self.host_country] if isinstance(self.host_country, str) else list(self.host_country)
             clauses.append("list_contains(?, m.country)")
             params.append(hosts)
+        if self.between:
+            clauses.append("list_contains(?, m.team1) AND list_contains(?, m.team2)")
+            params += [list(self.between), list(self.between)]
         return " AND ".join(clauses), params
 
     def row_sql(self, alias: str = "s", innings: bool = True) -> tuple[str, list]:
@@ -421,13 +429,20 @@ def career_leaderboard(con, order_by: str = "runs", min_matches: int = 1, min_wi
         [player_ids, player_ids, min_matches, min_wickets, limit]).df()
 
 
+# home, away or neutral for the side of scorecard row s (as in home_away_split)
+_VENUE_TYPE = """CASE WHEN m.home_team IS NULL THEN
+                    CASE WHEN m.country IS NULL THEN 'unknown' ELSE 'neutral' END
+                  WHEN m.home_team = s.team THEN 'home' ELSE 'away' END"""
+
+
 def _batting_innings(con, player_id: str, f: Filters) -> pd.DataFrame:
     """One row per batting innings: runs, balls, fours, sixes (NULL if unknown), out flag."""
     pred, params = f.match_sql()
     rows, row_params = f.row_sql()
     sql = f"""
     SELECT s.match_id, m.start_date, s.innings_no, s.runs, s.balls, s.fours, s.sixes,
-           s.out::INT AS out
+           s.out::INT AS out, s.how_out, s.opponent, m.country AS host_country,
+           split_part(coalesce(m.venue, m.city), ',', 1) AS ground, {_VENUE_TYPE} AS venue_type
     FROM batting_scorecard s JOIN matches m USING (match_id)
     WHERE {pred} AND s.player_id = ? {rows}
     ORDER BY m.start_date, s.innings_no
@@ -480,7 +495,8 @@ def _bowling_innings(con, player_id: str, f: Filters) -> pd.DataFrame:
     rows, row_params = f.row_sql()
     sql = f"""
     SELECT s.match_id, m.start_date, s.innings_no, s.balls AS legal_balls, s.runs_conceded,
-           s.wickets
+           s.wickets, s.opponent, m.country AS host_country,
+           split_part(coalesce(m.venue, m.city), ',', 1) AS ground, {_VENUE_TYPE} AS venue_type
     FROM bowling_scorecard s JOIN matches m USING (match_id)
     WHERE {pred} AND s.player_id = ? {rows}
     ORDER BY m.start_date, s.innings_no
@@ -558,17 +574,7 @@ def innings_splits(con, player_id: str, f: Filters | None = None) -> pd.DataFram
 
 def home_away_split(con, player_id: str, f: Filters | None = None) -> pd.DataFrame:
     """Batting at home, away and at neutral venues (needs venue country from venues.py)."""
-    inns = _batting_innings(con, player_id, f or Filters())
-    if inns.empty:
-        return _split(inns, "venue_type")
-    where = con.execute(
-        """SELECT m.match_id, CASE WHEN m.home_team IS NULL THEN
-                    CASE WHEN m.country IS NULL THEN 'unknown' ELSE 'neutral' END
-                  WHEN m.home_team = a.team THEN 'home' ELSE 'away' END AS venue_type
-           FROM matches m JOIN appearances a USING (match_id) WHERE a.player_id = ?""",
-        [player_id],
-    ).df()
-    return _split(inns.merge(where, on="match_id", how="left"), "venue_type")
+    return _split(_batting_innings(con, player_id, f or Filters()), "venue_type")
 
 
 def _split(inns: pd.DataFrame, by: str) -> pd.DataFrame:
@@ -583,6 +589,69 @@ def _split(inns: pd.DataFrame, by: str) -> pd.DataFrame:
     g["average"] = (g.runs / g.outs.where(g.outs > 0)).round(2)
     g["strike_rate"] = (100 * g.timed_runs / g.balls.where(g.balls > 0)).round(2)
     return g.reset_index()[[by] + cols]
+
+
+BREAKDOWNS = {"year": "year", "innings": "match_innings", "home_away": "venue_type",
+              "opponent": "opponent", "host_country": "host_country", "ground": "ground"}
+
+
+def _by(inns: pd.DataFrame, by: str) -> tuple[pd.DataFrame, str]:
+    if by not in BREAKDOWNS:
+        raise ValueError(f"by must be one of {', '.join(BREAKDOWNS)}")
+    if by == "year":
+        inns = inns.assign(year=pd.to_datetime(inns.start_date).dt.year)
+    inns = inns.assign(match_innings=inns.innings_no)
+    return inns, BREAKDOWNS[by]
+
+
+def batting_breakdown(con, player_id: str, f: Filters | None = None, by: str = "year") -> pd.DataFrame:
+    """A player's batting split by year, innings of the match, home/away, opponent, host
+    country or ground: innings, runs, outs, average, strike rate, hundreds, fifties, highest.
+    The first column is named as in BREAKDOWNS, e.g. venue_type for home_away."""
+    inns, col = _by(_batting_innings(con, player_id, f or Filters()), by)
+    out = _split(inns, col)
+    if not inns.empty:
+        hs = inns.sort_values(["runs", "out"], ascending=[False, True]).groupby(col).head(1)
+        hs = hs.assign(highest=[f"{int(r)}{'' if o else '*'}" for r, o in zip(hs.runs, hs.out)])
+        out = out.merge(hs[[col, "highest"]], on=col, how="left")
+    else:
+        out["highest"] = []
+    return out.sort_values(col if by in ("year", "innings") else "runs",
+                           ascending=by in ("year", "innings")).reset_index(drop=True)
+
+
+def bowling_breakdown(con, player_id: str, f: Filters | None = None, by: str = "year") -> pd.DataFrame:
+    """A player's bowling split the same ways as batting_breakdown: innings bowled, wickets,
+    runs conceded, average, economy and strike rate (over innings with balls known), five-fors."""
+    inns, col = _by(_bowling_innings(con, player_id, f or Filters()), by)
+    cols = [col, "innings_bowled", "wickets", "runs_conceded", "average", "economy", "strike_rate",
+            "five_wicket_hauls"]
+    if inns.empty:
+        return pd.DataFrame(columns=cols)
+    timed = inns.legal_balls.notna()
+    inns = inns.assign(t_runs=inns.runs_conceded.where(timed), t_wkts=inns.wickets.where(timed))
+    g = inns.groupby(col).agg(innings_bowled=("wickets", "size"), wickets=("wickets", "sum"),
+                              runs_conceded=("runs_conceded", "sum"), balls=("legal_balls", "sum"),
+                              t_runs=("t_runs", "sum"), t_wkts=("t_wkts", "sum"),
+                              five_wicket_hauls=("wickets", lambda w: int((w >= 5).sum())))
+    g["average"] = (g.runs_conceded / g.wickets.where(g.wickets > 0)).round(2)
+    g["economy"] = (6 * g.t_runs / g.balls.where(g.balls > 0)).round(2)
+    g["strike_rate"] = (g.balls / g.t_wkts.where(g.t_wkts > 0)).round(1)
+    out = g.reset_index()[cols]
+    return out.sort_values(col if by in ("year", "innings") else "wickets",
+                           ascending=by in ("year", "innings")).reset_index(drop=True)
+
+
+def dismissals(con, player_id: str, f: Filters | None = None) -> pd.DataFrame:
+    """How a batter got out (caught, bowled, lbw...), with each kind's share of dismissals.
+    Innings whose scorecard doesn't say how are counted as 'not recorded'."""
+    inns = _batting_innings(con, player_id, f or Filters())
+    outs = inns[inns.out == 1]
+    if outs.empty:
+        return pd.DataFrame(columns=["how_out", "times", "percent"])
+    g = outs.how_out.fillna("not recorded").value_counts().rename_axis("how_out").reset_index(name="times")
+    g["percent"] = (100 * g.times / g.times.sum()).round(1)
+    return g
 
 
 def host_countries(con) -> list[str]:
@@ -636,10 +705,14 @@ def head_to_head(con, team_a: str, team_b: str, f: Filters | None = None) -> pd.
     ).df()
 
 
+BATTING_ORDER = ("runs", "average", "hundreds", "fifties", "strike_rate", "sixes", "ducks")
+BOWLING_ORDER = ("wickets", "average", "economy", "strike_rate", "five_wicket_hauls")
+
+
 def batting_leaderboard(con, f: Filters | None = None, order_by: str = "runs",
                         min_innings: int = 10, limit: int = 25) -> pd.DataFrame:
-    """Top batters in the filtered matches. order_by: runs, average, hundreds or strike_rate."""
-    if order_by not in ("runs", "average", "hundreds", "strike_rate"):
+    """Top batters in the filtered matches. order_by: one of BATTING_ORDER."""
+    if order_by not in BATTING_ORDER:
         raise ValueError(order_by)
     f = f or Filters()
     pred, params = f.match_sql()
@@ -650,7 +723,10 @@ def batting_leaderboard(con, f: Filters | None = None, order_by: str = "runs",
            round(sum(s.runs) / nullif(sum(s.out::INT), 0), 2) AS average,
            round(100.0 * sum(s.runs) FILTER (WHERE s.balls IS NOT NULL)
                  / nullif(sum(s.balls), 0), 2) AS strike_rate,
-           count(*) FILTER (WHERE s.runs >= 100) AS hundreds
+           count(*) FILTER (WHERE s.runs >= 100) AS hundreds,
+           count(*) FILTER (WHERE s.runs >= 50 AND s.runs < 100) AS fifties,
+           count(*) FILTER (WHERE s.runs = 0 AND s.out) AS ducks,
+           sum(s.sixes) AS sixes
     FROM batting_scorecard s JOIN matches m USING (match_id)
     WHERE {pred} AND s.player_id IS NOT NULL {rows}
     GROUP BY s.player_id HAVING count(*) >= ?
@@ -661,14 +737,14 @@ def batting_leaderboard(con, f: Filters | None = None, order_by: str = "runs",
 
 def bowling_leaderboard(con, f: Filters | None = None, order_by: str = "wickets",
                         min_wickets: int = 10, limit: int = 25) -> pd.DataFrame:
-    """Top bowlers in the filtered matches. order_by: wickets, average, economy or strike_rate.
+    """Top bowlers in the filtered matches. order_by: one of BOWLING_ORDER.
 
     For average, economy and strike rate, lower is better, so those sort ascending. Economy
     and strike rate use only innings where balls bowled are known.
     """
-    if order_by not in ("wickets", "average", "economy", "strike_rate"):
+    if order_by not in BOWLING_ORDER:
         raise ValueError(order_by)
-    direction = "DESC" if order_by == "wickets" else "ASC"
+    direction = "DESC" if order_by in ("wickets", "five_wicket_hauls") else "ASC"
     f = f or Filters()
     pred, params = f.match_sql()
     rows, row_params = f.row_sql()
@@ -677,7 +753,8 @@ def bowling_leaderboard(con, f: Filters | None = None, order_by: str = "wickets"
         SELECT s.player_id, any_value(s.player) AS player, any_value(s.team) AS team,
                sum(s.balls) AS balls, sum(s.runs_conceded) AS runs, sum(s.wickets) AS wickets,
                sum(s.runs_conceded) FILTER (WHERE s.balls IS NOT NULL) AS timed_runs,
-               sum(s.wickets) FILTER (WHERE s.balls IS NOT NULL) AS timed_wickets
+               sum(s.wickets) FILTER (WHERE s.balls IS NOT NULL) AS timed_wickets,
+               count(*) FILTER (WHERE s.wickets >= 5) AS five_wicket_hauls
         FROM bowling_scorecard s JOIN matches m USING (match_id)
         WHERE {pred} AND s.player_id IS NOT NULL {rows} GROUP BY s.player_id
     )
@@ -685,11 +762,38 @@ def bowling_leaderboard(con, f: Filters | None = None, order_by: str = "wickets"
            runs AS runs_conceded, wickets,
            round(runs / nullif(wickets, 0), 2) AS average,
            round(6.0 * timed_runs / nullif(balls, 0), 2) AS economy,
-           round(balls / nullif(timed_wickets, 0), 1) AS strike_rate
+           round(balls / nullif(timed_wickets, 0), 1) AS strike_rate, five_wicket_hauls
     FROM b WHERE wickets >= ?
     ORDER BY {order_by} {direction} NULLS LAST LIMIT ?
     """
     return con.execute(sql, params + row_params + [min_wickets, limit]).df()
+
+def top_innings(con, f: Filters | None = None, kind: str = "batting", limit: int = 10) -> pd.DataFrame:
+    """The highest individual scores (kind="batting") or best bowling figures in an innings
+    (kind="bowling") in the filtered matches with scorecards. Not-out scores rank above out."""
+    if kind not in ("batting", "bowling"):
+        raise ValueError("kind must be batting or bowling")
+    f = f or Filters()
+    pred, params = f.match_sql()
+    rows, row_params = f.row_sql()
+    if kind == "batting":
+        sql = f"""
+        SELECT s.player_id, s.player, s.team, s.opponent,
+               s.runs || CASE WHEN s.out THEN '' ELSE '*' END AS score, s.balls,
+               m.start_date, split_part(coalesce(m.venue, m.city), ',', 1) AS ground, s.innings_no
+        FROM batting_scorecard s JOIN matches m USING (match_id)
+        WHERE {pred} AND s.player_id IS NOT NULL {rows}
+        ORDER BY s.runs DESC, s.out::INT, m.start_date LIMIT ?"""
+    else:
+        sql = f"""
+        SELECT s.player_id, s.player, s.team, s.opponent,
+               s.wickets || '/' || s.runs_conceded AS figures, s.balls // 6 || '.' || s.balls % 6 AS overs,
+               m.start_date, split_part(coalesce(m.venue, m.city), ',', 1) AS ground, s.innings_no
+        FROM bowling_scorecard s JOIN matches m USING (match_id)
+        WHERE {pred} AND s.player_id IS NOT NULL {rows}
+        ORDER BY s.wickets DESC, s.runs_conceded, m.start_date LIMIT ?"""
+    return con.execute(sql, params + row_params + [limit]).df()
+
 
 def recent_results(con, limit: int = 10) -> pd.DataFrame:
     """The latest Tests in the database, newest first, with the result in words."""

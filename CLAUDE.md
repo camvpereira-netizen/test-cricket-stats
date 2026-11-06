@@ -43,7 +43,10 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
   wrappers of `stats.py` functions (tools). Never give it a raw SQL tool; new questions it can't
   answer need a new tested stats function and tool. Tests use a fake client (`tests/test_guru.py`).
 - `src/cricket/questions.py` — free question reader (no AI) tried before the guru: vocabulary +
-  fuzzy player names -> the same guru tools. Returns None when unsure rather than guessing.
+  fuzzy player names -> the same guru tools, incl. in-depth reports and comparisons. Returns None
+  when unsure rather than guessing. Add new phrasings to `tests/golden_questions.txt`.
+- `guru.ask_openai` — the same tool loop for free-tier OpenAI-compatible models (Gemini, Groq),
+  used before Claude when `GURU_FREE_API_KEY` is set (budget rule: no paid APIs by default).
 - `src/cricket/predict.py` — prediction models. Features must use only information from before
   the match/ball being predicted; every model reports held-out metrics against a baseline.
 - `app.py` — Streamlit web app entry and top menu; pages are `app_pages/<name>.py`, each calling

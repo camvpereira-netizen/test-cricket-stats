@@ -143,3 +143,48 @@ def test_ask_rejects_empty_and_long_questions(con):
 def test_dates_parse():
     assert guru._date("2010-01-31", "d") == date(2010, 1, 31)
     assert guru._date(None, "d") is None
+
+
+def test_new_tools(con):
+    t = guru.run_tool(con, "player_batting_split", {"player_id": "id_X", "by": "opponent"})
+    assert list(t.runs) == [54, 6]
+    t = guru.run_tool(con, "player_bowling_split", {"player_id": "id_X", "by": "host_country"})
+    assert t.set_index("host_country").loc["England", "wickets"] == 5
+    assert guru.run_tool(con, "player_dismissals", {"player_id": "id_X"}).times.iloc[0] == 2
+    assert guru.run_tool(con, "best_innings", {"kind": "bowling"}).figures.iloc[0] == "5/4"
+    t = guru.run_tool(con, "player_batting", {"player_id": "id_X", "filters": {"between": ["A", "C"]}})
+    assert t.runs.iloc[0] == 54
+    with pytest.raises(guru.ToolInputError):
+        guru.run_tool(con, "player_batting", {"player_id": "id_X", "filters": {"between": ["A"]}})
+    with pytest.raises(guru.ToolInputError):
+        guru.run_tool(con, "player_batting_split", {"player_id": "id_X", "by": "weather"})
+
+
+def test_ask_openai_runs_tools_with_a_fake_free_model(con):
+    """The OpenAI-compatible loop used for free-tier models (Gemini, Groq), with a fake server."""
+    import json
+    scripted = [
+        {"choices": [{"finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "player_batting", "arguments": json.dumps({"player_id": "id_X"})}},
+            {"id": "c2", "type": "function", "function": {"name": "nope", "arguments": "{}"}}]}}],
+         "usage": {"prompt_tokens": 50, "completion_tokens": 5}},
+        {"choices": [{"finish_reason": "stop", "message": {"content": "X made 60 runs."}}],
+         "usage": {"prompt_tokens": 80, "completion_tokens": 7}},
+    ]
+    sent = []
+
+    def post(url, headers, body):
+        sent.append((url, headers, json.loads(json.dumps(body))))
+        return scripted.pop(0)
+
+    a = guru.ask_openai(con, "How many runs has X made?", "k", "https://example.test/v1/", "m", post=post)
+    assert a.text == "X made 60 runs." and a.ok
+    assert a.steps[0].table.runs.iloc[0] == 60 and "no tool" in a.steps[1].error
+    assert a.input_tokens == 130 and a.output_tokens == 12
+    url, headers, body = sent[1]
+    assert url == "https://example.test/v1/chat/completions" and headers["Authorization"] == "Bearer k"
+    assert body["messages"][0]["role"] == "system"
+    tool_msgs = [m for m in body["messages"] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2"] and tool_msgs[1]["content"].startswith("Error")
+    assert {t["function"]["name"] for t in body["tools"]} == {t["name"] for t in guru.TOOLS}

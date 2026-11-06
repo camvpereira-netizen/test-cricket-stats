@@ -32,7 +32,7 @@ checks every text colour meets WCAG AA contrast.
 |---|---|---|
 | Home | Home | Number of Tests, latest Test, when the data was built, the latest results |
 | Stats | Player search | A plain lookup: a player's whole Test career (batting, bowling, fielding) with scoreboard headline numbers. No filters; questions with filters or splits go to the guru |
-| Stats | Ask the guru | Plain-English questions. Common ones are read for free by `questions.py`; others go to Claude if a key is set. Both call the tested functions in `stats.py` (never raw SQL) and show each lookup |
+| Stats | Ask the guru | Plain-English questions. Most are read for free by `questions.py`; others go to a free-tier AI model (or Claude) if a key is set. Both call the tested functions in `stats.py` (never raw SQL) and show each lookup |
 | Coming soon | Compare, Teams, Leaderboards | Side-by-side comparison, team records and head-to-head with ratings, leaderboards. Filters (opponent, venue, dates) are in the sidebar on these pages |
 | Coming soon | Predictions, Model accuracy | Match result, fourth-innings chase, a player's next innings, and how each model scores on held-out Tests |
 | Coming soon | Games | Placeholder for games (phase 4) |
@@ -57,32 +57,47 @@ checks every text colour meets WCAG AA contrast.
 
 ## Ask the guru (plain-English questions)
 
-`src/cricket/guru.py` gives Claude a fixed set of tools, each a checked wrapper around a
-function in `stats.py` (find a player, batting, bowling, splits, compare, leaderboards, team
-record, head-to-head, recent results). Claude picks the tools and writes the answer; it cannot
-run its own SQL, and inputs such as team names, dates and player ids are checked before any
-query runs. The page shows every lookup and the table it returned.
+The guru answers in three layers, cheapest first. Every layer calls the same checked tools in
+`src/cricket/guru.py`, each a wrapper around a tested function in `stats.py` (find a player,
+batting, bowling, breakdowns by year, innings, home/away, opponent, host country or ground,
+dismissals, best innings, compare, leaderboards, all-time careers, team record, head-to-head).
+No layer can run its own SQL, inputs such as team names, dates and player ids are checked
+before any query runs, and the page shows every lookup and the table it returned.
 
-Common questions never reach Claude: `src/cricket/questions.py` reads them itself (no AI,
-free) by picking out player, team and country names, stats, innings, grounds, dates and
-minimums, then calls the same tools. Only questions it can't read go to Claude, and only when a
-key is set; without one the page suggests a rephrase.
+1. **Built-in reader** (`src/cricket/questions.py`, free, no AI). It picks out players
+   (nicknames and typos allowed), teams, nationalities, host countries, grounds (with their
+   other names, e.g. the Gabba), series (the Ashes, Border-Gavaskar...), stats, innings, dates,
+   minimums and breakdowns, and writes the answer itself, including in-depth player reports and
+   comparisons ("in-depth comparison of Root and Kohli away from home"). It hands over anything
+   it isn't sure about rather than guessing. `tests/golden_questions.txt` lists questions it
+   should read; `tests/test_golden.py` checks them against a real database when one is present.
+2. **A free-tier AI model**, if `GURU_FREE_API_KEY` is set: any provider with an
+   OpenAI-compatible chat API and tool calling. Presets: `gemini` (Google AI Studio key) and
+   `groq` (GroqCloud key). Free tiers are rate limited, and Google may use free-tier prompts to
+   improve its products, so don't put anything private in questions.
+3. **Claude**, if `ANTHROPIC_API_KEY` is set and no free model is (paid, so off by default).
+
+Without 2 or 3 the page suggests a rephrase for questions the reader can't follow.
 
 Settings, as Streamlit secrets (app settings, Secrets) or environment variables:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | none | Turns the guru on. Create one at console.anthropic.com |
+| `GURU_FREE_API_KEY` | none | Turns on the free-tier model for questions the reader can't follow |
+| `GURU_FREE_PROVIDER` | `gemini` | `gemini` or `groq` (sets the address and model below) |
+| `GURU_FREE_MODEL` | `gemini-flash-latest` / `openai/gpt-oss-120b` | Model to use |
+| `GURU_FREE_BASE_URL` | the provider's | Any other OpenAI-compatible address |
+| `ANTHROPIC_API_KEY` | none | Claude instead (paid). Create one at console.anthropic.com |
 | `GURU_MODEL` | `claude-opus-5-5` | Claude model to use |
 | `GURU_EFFORT` | `medium` | How hard Claude thinks: `low`, `medium` or `high` |
-| `GURU_DAILY_LIMIT` | 100 | Questions a day across all visitors |
-| `GURU_SESSION_LIMIT` | 20 | Questions per visit |
-| `GURU_PASSWORD` | none | If set, the page asks for this before answering |
+| `GURU_DAILY_LIMIT` | 100 | AI questions a day across all visitors |
+| `GURU_SESSION_LIMIT` | 20 | AI questions per visit |
+| `GURU_PASSWORD` | none | If set, the page asks for this before using an AI model |
 
-Also set a monthly spend limit for the key's workspace in the Anthropic Console (Settings,
-Limits). The app's own limits reset when Streamlit restarts the app, so the Console limit is
-the one that caps the bill. Requests ask the API to retry on a fallback model if a safety
-classifier declines one (`fallbacks: "default"`).
+If you ever use Claude, set a monthly spend limit for the key's workspace in the Anthropic
+Console (Settings, Limits). The app's own limits reset when Streamlit restarts the app.
+Claude requests ask the API to retry on a fallback model if a safety classifier declines one
+(`fallbacks: "default"`).
 - GitHub turns off scheduled workflows in a public repo after 60 days with no repository
   activity; re-enable it from the Actions tab if that happens.
 
