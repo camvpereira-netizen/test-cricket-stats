@@ -65,6 +65,9 @@ FILTERS_SCHEMA = {
                        "description": "Whether the player's side was at home, away or at a neutral venue."},
         "date_from": {"type": "string", "description": "First match start date, YYYY-MM-DD."},
         "date_to": {"type": "string", "description": "Last match start date, YYYY-MM-DD."},
+        "between": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2,
+                    "description": "Only Tests between these two teams, e.g. ['England', 'Australia'] "
+                                   "for the Ashes. Unlike opponent, it suits players from both sides."},
     },
     "additionalProperties": False,
 }
@@ -97,23 +100,34 @@ TOOLS = [
     _tool("player_bowling", "A player's bowling in Tests with scorecards (mostly 2001 on): wickets, "
           "average, economy, strike rate, best figures, five-fors and ten-wicket matches.",
           {"player_id": PLAYER_ID, "filters": FILTERS_SCHEMA}, ["player_id"]),
-    _tool("player_batting_split", "A player's batting broken down by innings of the match, by home/"
-          "away/neutral, or by calendar year, in Tests with scorecards.",
-          {"player_id": PLAYER_ID, "by": {"type": "string", "enum": ["innings", "home_away", "year"]},
+    _tool("player_batting_split", "A player's batting broken down by year, innings of the match, "
+          "home/away/neutral, opponent, host country or ground, in Tests with scorecards.",
+          {"player_id": PLAYER_ID, "by": {"type": "string", "enum": list(stats.BREAKDOWNS)},
            "filters": FILTERS_SCHEMA}, ["player_id", "by"]),
+    _tool("player_bowling_split", "A player's bowling broken down by year, innings of the match, "
+          "home/away/neutral, opponent, host country or ground, in Tests with scorecards.",
+          {"player_id": PLAYER_ID, "by": {"type": "string", "enum": list(stats.BREAKDOWNS)},
+           "filters": FILTERS_SCHEMA}, ["player_id", "by"]),
+    _tool("player_dismissals", "How a batter got out (caught, bowled, lbw and so on) with each "
+          "kind's share, in Tests with scorecards.",
+          {"player_id": PLAYER_ID, "filters": FILTERS_SCHEMA}, ["player_id"]),
     _tool("compare_players", "Side-by-side whole-career totals plus filtered batting and bowling for "
           "two to four players.",
           {"player_ids": {"type": "array", "items": PLAYER_ID, "minItems": 2, "maxItems": 4},
            "filters": FILTERS_SCHEMA}, ["player_ids"]),
     _tool("batting_leaderboard", "Top batters in Tests with scorecards that match the filters.",
           {"filters": FILTERS_SCHEMA,
-           "order_by": {"type": "string", "enum": ["runs", "average", "hundreds", "strike_rate"]},
+           "order_by": {"type": "string", "enum": list(stats.BATTING_ORDER)},
            "min_innings": {"type": "integer", "minimum": 1}, "limit": LIMIT}),
     _tool("bowling_leaderboard", "Top bowlers in Tests with scorecards that match the filters. "
           "Average, economy and strike rate sort lowest first.",
           {"filters": FILTERS_SCHEMA,
-           "order_by": {"type": "string", "enum": ["wickets", "average", "economy", "strike_rate"]},
+           "order_by": {"type": "string", "enum": list(stats.BOWLING_ORDER)},
            "min_wickets": {"type": "integer", "minimum": 1}, "limit": LIMIT}),
+    _tool("best_innings", "Highest individual scores (kind batting) or best bowling figures in an "
+          "innings (kind bowling) in Tests with scorecards that match the filters.",
+          {"kind": {"type": "string", "enum": ["batting", "bowling"]}, "filters": FILTERS_SCHEMA,
+           "limit": LIMIT}, ["kind"]),
     _tool("all_time_careers", "All-time leaders by whole-career totals over every Test since 1877. "
           "Cannot be filtered.",
           {"order_by": {"type": "string", "enum": sorted(stats.CAREER_ORDER)},
@@ -181,7 +195,11 @@ def _filters(con, raw: dict | None) -> stats.Filters:
     venue = (raw.get("venue") or "").strip()
     if len(venue) > 60:
         raise ToolInputError("venue text is too long")
+    between = raw.get("between") or None
+    if between is not None and (not isinstance(between, list) or len(between) != 2):
+        raise ToolInputError("between must list exactly two teams")
     return stats.Filters(
+        between=[_one_of(t, teams, "team") for t in between] if between else None,
         opponent=_one_of(raw["opponent"], teams, "team") if raw.get("opponent") else None,
         team=_one_of(raw["team"], teams, "team") if raw.get("team") else None,
         host_country=[_one_of(h, hosts, "host country") for h in host_list] if host_list else None,
@@ -239,25 +257,27 @@ def run_tool(con, name: str, args: dict) -> pd.DataFrame:
     if name == "player_bowling":
         pid = _player(con, args.get("player_id"))
         return _row(stats.bowling_summary(con, pid, f()))
-    if name == "player_batting_split":
+    if name in ("player_batting_split", "player_bowling_split"):
         pid = _player(con, args.get("player_id"))
-        split = {"innings": stats.innings_splits, "home_away": stats.home_away_split,
-                 "year": stats.runs_by_year}.get(args.get("by"))
-        if split is None:
-            raise ToolInputError("by must be innings, home_away or year")
-        return split(con, pid, f())
+        by = _one_of(args.get("by"), list(stats.BREAKDOWNS), "by")
+        fn = stats.batting_breakdown if name == "player_batting_split" else stats.bowling_breakdown
+        return fn(con, pid, f(), by)
+    if name == "player_dismissals":
+        return stats.dismissals(con, _player(con, args.get("player_id")), f())
     if name == "compare_players":
         ids = args.get("player_ids")
         if not isinstance(ids, list) or not 2 <= len(ids) <= 4:
             raise ToolInputError("player_ids must list two to four ids")
         return stats.compare(con, [_player(con, p) for p in ids], f()).reset_index(names="stat")
     if name == "batting_leaderboard":
-        order = _one_of(args.get("order_by", "runs"), ["runs", "average", "hundreds", "strike_rate"], "order_by")
+        order = _one_of(args.get("order_by", "runs"), list(stats.BATTING_ORDER), "order_by")
         return stats.batting_leaderboard(con, f(), order, int(args.get("min_innings", 10)), _limit(args))
     if name == "bowling_leaderboard":
-        order = _one_of(args.get("order_by", "wickets"), ["wickets", "average", "economy", "strike_rate"],
-                        "order_by")
+        order = _one_of(args.get("order_by", "wickets"), list(stats.BOWLING_ORDER), "order_by")
         return stats.bowling_leaderboard(con, f(), order, int(args.get("min_wickets", 10)), _limit(args))
+    if name == "best_innings":
+        kind = _one_of(args.get("kind"), ["batting", "bowling"], "kind")
+        return stats.top_innings(con, f(), kind, _limit(args))
     if name == "all_time_careers":
         order = _one_of(args.get("order_by", "runs"), sorted(stats.CAREER_ORDER), "order_by")
         return stats.career_leaderboard(con, order, int(args.get("min_matches", 1)),
@@ -328,6 +348,83 @@ def ask(con, question: str, client, model: str = DEFAULT_MODEL, effort: str = DE
             results.append({"type": "tool_result", "tool_use_id": call.id, "content": content,
                             "is_error": is_error})
         messages.append({"role": "user", "content": results})
+    answer.text = "Sorry, that question needed more lookups than I'm allowed. Try asking it more simply."
+    answer.ok = False
+    return answer
+
+
+# --- Free-tier models through an OpenAI-compatible chat API -------------------------------
+# Several providers give a free API quota with tool calling behind the same request shape,
+# so one loop serves them all. The model still only calls the checked tools above.
+FREE_PROVIDERS = {
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+               "model": "gemini-flash-latest"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b"},
+}
+OPENAI_TOOLS = [{"type": "function", "function": {"name": t["name"], "description": t["description"],
+                                                  "parameters": t["input_schema"]}} for t in TOOLS]
+
+
+def _post_json(url: str, headers: dict, body: dict, timeout: float = 60) -> dict:
+    import requests  # only needed when a free model is set up
+    r = requests.post(url, headers=headers, json=body, timeout=timeout)
+    if r.status_code == 429:
+        raise RuntimeError("The free model's rate limit was reached. Try again in a minute.")
+    r.raise_for_status()
+    return r.json()
+
+
+def ask_openai(con, question: str, api_key: str, base_url: str, model: str,
+               history: list[tuple[str, str]] | None = None, post=_post_json) -> Answer:
+    """Answer one question with an OpenAI-compatible model (e.g. Gemini or Groq free tier).
+
+    post(url, headers, body) -> dict is injectable so tests can use a fake.
+    """
+    question = question.strip()
+    if not question:
+        return Answer("Ask a question about men's Test cricket.", ok=False)
+    if len(question) > MAX_QUESTION_CHARS:
+        return Answer(f"Please keep questions under {MAX_QUESTION_CHARS} characters.", ok=False)
+    messages: list[dict] = [{"role": "system", "content": SYSTEM}]
+    for q, a in history or []:
+        messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
+    messages.append({"role": "user", "content": question})
+    url = base_url.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    answer = Answer("")
+    for _ in range(MAX_ROUNDS):
+        data = post(url, headers, {"model": model, "messages": messages, "tools": OPENAI_TOOLS,
+                                   "tool_choice": "auto"})
+        usage = data.get("usage") or {}
+        answer.input_tokens += usage.get("prompt_tokens", 0) or 0
+        answer.output_tokens += usage.get("completion_tokens", 0) or 0
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            answer.text = (msg.get("content") or "").strip() or "Sorry, I couldn't work that one out."
+            if choice.get("finish_reason") == "length":
+                answer.text += "\n\n(The answer was cut off.)"
+                answer.ok = False
+            return answer
+        messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
+        for call in calls:
+            fn = call.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = None
+            step = Step(fn.get("name", "?"), args if isinstance(args, dict) else {})
+            try:
+                if args is None:
+                    raise ToolInputError("arguments must be valid JSON")
+                step.table = run_tool(con, step.tool, args)
+                content = _result_json(step.table)
+            except (ValueError, TypeError, duckdb.Error) as e:
+                step.error = str(e)
+                content = f"Error: {e}"
+            answer.steps.append(step)
+            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content})
     answer.text = "Sorry, that question needed more lookups than I'm allowed. Try asking it more simply."
     answer.ok = False
     return answer

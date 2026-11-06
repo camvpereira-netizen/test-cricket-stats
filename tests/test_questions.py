@@ -68,3 +68,42 @@ def test_short_words_are_not_partial_player_names(con):
 def test_venue_filter_ignores_apostrophes(con):
     from cricket.stats import Filters, batting_summary
     assert batting_summary(con, "id_X", Filters(venue_contains="Lords"))["runs"] == 6
+
+
+def test_in_depth_comparison(con):
+    plan = questions.parse(con, "create an in-depth stats comparison between X and Z")
+    assert plan.kind == "compare" and plan.calls[0][0] == "compare_players"
+    assert ("player_batting_split", {"player_id": "id_X", "by": "host_country", "filters": {}}) in plan.calls
+    a = questions.answer(con, "create an in-depth stats comparison between X and Z")
+    assert "**X**: 60 runs at 30 in 2 innings" in a.text and "highest average" in a.text
+
+
+def test_breakdowns(con):
+    a = questions.answer(con, "X runs by opponent")
+    assert a.steps[0].tool == "player_batting_split" and "Most runs against C: 54" in a.text
+    a = questions.answer(con, "X wickets against each team")
+    assert a.steps[0].tool == "player_bowling_split" and "Most wickets against B: 5" in a.text
+    assert questions.parse(con, "X batting in each country").calls[0][1]["by"] == "host_country"
+
+
+def test_dismissals_and_report(con):
+    a = questions.answer(con, "how does X get out")
+    assert a.steps[0].tool == "player_dismissals" and "caught" in a.text
+    a = questions.answer(con, "full breakdown of X")
+    assert "player_dismissals" in [s.tool for s in a.steps]
+    assert "Dismissals" in a.text and "5 wickets" in a.text
+
+
+def test_focus_stats_and_best_innings(con):
+    a = questions.answer(con, "how many sixes has X hit")
+    assert "**Sixes: 9**" in a.text
+    a = questions.answer(con, "highest individual score at the mcg")
+    assert a.steps[0].tool == "best_innings" and "X (A) 54 against C" in a.text
+    plan = questions.parse(con, "most sixes")
+    assert plan.calls[0][1]["order_by"] == "sixes"
+
+
+def test_series_and_nationality_phrases():
+    assert "ashes" in questions._norm("in the Ashes") and "border gavaskar" in questions._norm("Border-Gavaskar")
+    assert questions.SERIES["ashes"] == ("England", "Australia")
+    assert "fivefors" in questions._norm("most five wicket hauls")

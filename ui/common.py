@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from cricket import predict, stats
+from cricket import guru, predict, stats
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Path(os.environ.get("CRICKET_DB", ROOT / "data" / "tests.duckdb"))
@@ -176,6 +176,25 @@ def guru_client():
     except ImportError:
         return None, "The anthropic package is not installed (pip install -r requirements.txt)."
     return anthropic.Anthropic(api_key=key, max_retries=2, timeout=120), None
+
+
+def free_model() -> dict | None:
+    """Settings for a free-tier AI model behind an OpenAI-compatible API, or None if not set up.
+
+    Secrets: GURU_FREE_API_KEY (required), GURU_FREE_PROVIDER ("gemini" or "groq", default
+    gemini), and optionally GURU_FREE_MODEL and GURU_FREE_BASE_URL to override the preset.
+    """
+    key = secret("GURU_FREE_API_KEY")
+    if not key:
+        return None
+    provider = str(secret("GURU_FREE_PROVIDER", "gemini")).lower()
+    preset = guru.FREE_PROVIDERS.get(provider, {})
+    base_url = secret("GURU_FREE_BASE_URL", preset.get("base_url"))
+    model = secret("GURU_FREE_MODEL", preset.get("model"))
+    if not base_url or not model:
+        return None
+    return {"api_key": key, "base_url": base_url, "model": model,
+            "label": f"{model} ({provider} free tier)"}
 
 
 @st.cache_resource

@@ -239,14 +239,15 @@ def accuracy(ctx: Ctx):
 GURU_TITLE = "Ask the guru"  # working name until Cam picks one
 GURU_EXAMPLES = [
     "Who has the best batting average in the fourth innings in Asia since 2010, minimum 15 innings?",
-    "How does Joe Root's average in Australia compare with Steve Smith's in England?",
+    "In-depth comparison of Joe Root and Virat Kohli away from home",
+    "How many runs did Steve Smith score in 2014?",
     "Which bowlers have the most wickets at Lord's?",
     "What is India's record against Australia since 2000?",
 ]
 TOOL_LABELS = {t["name"]: t["name"].replace("_", " ").capitalize() for t in guru.TOOLS}
 
 
-def _show_guru_answer(a: guru.Answer, by_claude: bool):
+def _show_guru_answer(a: guru.Answer, by: str):
     st.markdown(a.text)
     if a.steps:
         with st.expander(f"How the guru worked this out ({len(a.steps)} lookups)"):
@@ -259,23 +260,24 @@ def _show_guru_answer(a: guru.Answer, by_claude: bool):
                     st.warning(step.error)
                 elif step.table is not None:
                     st.dataframe(tidy(step.table), hide_index=True, width="stretch")
-    st.caption(f"Answered by Claude: {a.input_tokens:,} input and {a.output_tokens:,} output tokens"
-               if by_claude else "Answered by the built-in question reader (free, no AI)")
+    st.caption(f"Answered by {by}: {a.input_tokens:,} input and {a.output_tokens:,} output tokens. "
+               "AI answers can misread a question, so check the lookups."
+               if by else "Answered by the built-in question reader (free, no AI)")
 
 
 def ask(ctx: Ctx):
     theme.banner(GURU_TITLE, "Splits, filters and comparisons: just ask.")
-    st.write("Ask about men's Test cricket in plain English. Common questions are read by the site "
-             "itself for free; others go to Claude if it is set up. Either way the numbers come from "
+    st.write("Ask about men's Test cricket in plain English. Most questions are read by the site "
+             "itself for free; others go to an AI model if one is set up. Either way the numbers come from "
              "the same tested stat functions as the rest of the site, and every lookup is shown.")
     st.caption("Player stats with filters cover Tests with scorecards (mostly 2001 on); whole-career "
                "totals cover every Test. Check the lookups if an answer looks wrong.")
     history = st.session_state.setdefault("guru_history", [])
-    for q, a, by_claude in history:
+    for q, a, by in history:
         with st.chat_message("user"):
             st.write(q)
         with st.chat_message("assistant"):
-            _show_guru_answer(a, by_claude)
+            _show_guru_answer(a, by)
     if not history:
         st.write("Try one of these:")
         for i, q in enumerate(GURU_EXAMPLES):
@@ -288,41 +290,48 @@ def ask(ctx: Ctx):
     with st.chat_message("user"):
         st.write(question)
     with st.chat_message("assistant"):
-        answer, by_claude = questions.answer(ctx.con, question), False
+        answer, by = questions.answer(ctx.con, question), ""
         if answer is None:
-            answer, by_claude = _ask_claude(ctx, question, history)
+            answer, by = _ask_ai(ctx, question, history)
             if answer is None:
                 return
-        _show_guru_answer(answer, by_claude)
-    history.append((question, answer, by_claude))
+        _show_guru_answer(answer, by)
+    history.append((question, answer, by))
 
 
-def _ask_claude(ctx: Ctx, question: str, history: list):
-    """The Claude guru, for questions the built-in reader doesn't understand. (answer, True) or (None, False)."""
-    client, why = common.guru_client()
+def _ask_ai(ctx: Ctx, question: str, history: list):
+    """An AI model for questions the built-in reader doesn't understand: a free-tier model if
+    one is set up, else Claude if an API key is set. (answer, who answered) or (None, "")."""
+    free = common.free_model()
+    client, _ = common.guru_client() if free is None else (None, None)
     password = common.secret("GURU_PASSWORD")
-    if client is None or (password and not st.session_state.get("guru_unlocked")):
+    if (free is None and client is None) or (password and not st.session_state.get("guru_unlocked")):
         st.write("I couldn't read that question. Try naming a player, team or stat, for example: "
-                 "\"most wickets in India since 2015\", \"Root's average against Australia\", or "
-                 "\"England's record at Lord's\".")
-        if password and client is not None:
-            if st.text_input("Password for harder questions (uses Claude)", type="password",
+                 "\"most wickets in India since 2015\", \"Root's average against Australia\", "
+                 "\"in-depth comparison of Root and Kohli away from home\" or \"England's record at Lord's\".")
+        if password and (free or client):
+            if st.text_input("Password for harder questions (uses an AI model)", type="password",
                              key="guru_pw") == password:
                 st.session_state["guru_unlocked"] = True
                 st.rerun()
-        return None, False
+        return None, ""
     if blocked := common.guru_take_question():
         st.warning(blocked)
-        return None, False
-    with st.spinner("Asking Claude..."):
+        return None, ""
+    past = [(q, a.text) for q, a, _ in history[-3:] if a.ok]
+    with st.spinner("Thinking it through..."):
         try:
+            if free:
+                return guru.ask_openai(ctx.con, question, free["api_key"], free["base_url"], free["model"],
+                                       history=past), free["label"]
             return guru.ask(ctx.con, question, client,
                             model=common.secret("GURU_MODEL", guru.DEFAULT_MODEL),
                             effort=common.secret("GURU_EFFORT", guru.DEFAULT_EFFORT),
-                            history=[(q, a.text) for q, a, _ in history[-3:] if a.ok]), True
-        except Exception as e:  # API errors: bad key, spend limit reached, outage
-            st.error(f"Claude couldn't answer just now ({type(e).__name__}). Please try again later.")
-            return None, False
+                            history=past), "Claude"
+        except Exception as e:  # API errors: bad key, rate or spend limit reached, outage
+            st.error(f"The AI model couldn't answer just now ({type(e).__name__}: {str(e)[:120]}). "
+                     "Please try again later.")
+            return None, ""
 
 
 def games(ctx: Ctx):
