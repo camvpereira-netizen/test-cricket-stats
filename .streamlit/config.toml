@@ -1,5 +1,13 @@
+# Test cricket colours: cream whites, red ball, green outfield. Kept in step with ui/theme.py.
 [theme]
-primaryColor = "#1b6e3a"
+base = "light"
+primaryColor = "#A6111C"
+backgroundColor = "#FBF8F0"
+secondaryBackgroundColor = "#EAF1E5"
+textColor = "#1E2A22"
+linkColor = "#A6111C"
+borderColor = "#CFDCC8"
+baseRadius = "medium"
 
 [server]
 headless = true

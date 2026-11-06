@@ -5,13 +5,13 @@ import pandas as pd
 import streamlit as st
 
 from cricket import guru, questions, scorecards, stats
-from ui import common
+from ui import common, theme
 from ui.common import Ctx, models, player_picker, show_probs, tidy
 
 
 def home(ctx: Ctx):
-    st.title("Test Cricket Stats")
-    st.write("Search, compare and predict men's Test cricket, from the first Test in 1877 to the latest.")
+    theme.banner("Test Cricket Stats", "Every men's Test from Melbourne 1877 to the latest session. "
+                 "Look up a player or ask the guru.", big=True)
     s = stats.data_summary(ctx.con)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Tests", f"{s['tests']:,}")
@@ -50,52 +50,44 @@ def _career_table(df, labels: dict, places: dict | None = None):
 
 
 def player(ctx: Ctx):
-    st.title("Player")
-    pid = player_picker(ctx.con, "Search player", "one")
-    if not pid:
+    theme.banner("Player search", "Find any men's Test cricketer since 1877 and see their whole career.")
+    row = common.pick_player(ctx.con, "Search for a player", "one")
+    if row is None:
+        st.caption("Type part of a name: a surname, a first name, or initials like "
+                   "\"SR Tendulkar\". Spelling slips are fine.")
         return
-    career = stats.test_career(ctx.con, pid)
-    if not career["batting"].empty:
-        st.subheader("Batting")
-        _career_table(career["batting"], BAT_LABELS, {"average": 2, "strike_rate": 2})
-        st.subheader("Bowling")
-        _career_table(career["bowling"], BOWL_LABELS, {"average": 2, "economy": 2, "strike_rate": 1})
-        st.subheader("Other")
-        _career_table(career["other"], OTHER_LABELS)
-        st.caption(
-            "Whole Test career, one row per team. Where every Test is in Cricsheet's ball-by-ball "
-            "data (most players since 2002) every figure is counted from the deliveries. Otherwise "
-            "figures come from Wikipedia's list of the team's Test cricketers, with gaps filled from "
-            "the player's article. A dash means no open source has it: balls faced, fours and sixes "
-            "weren't recorded for most early Tests, and best-in-a-match, 4-wicket innings and "
-            "bowling innings need full scorecards. Filters don't apply to these tables.")
-    f = ctx.filters
-    if not stats.batting_summary(ctx.con, pid)["innings"] and not stats.bowling_summary(ctx.con, pid)["innings_bowled"]:
-        st.info("No ball-by-ball scorecards for this player's Tests (they start in 2001), so the "
-                "filtered stats and splits aren't available.")
+    career = stats.test_career(ctx.con, row.player_id)
+    if career["batting"].empty:
+        st.info("No Test career figures for this player yet.")
         return
-    st.divider()
-    st.subheader("Filtered stats and splits (ball-by-ball Tests, 2001 on)")
-    st.caption("These cover only Tests with ball-by-ball scorecards, not the whole career. "
-               "The sidebar filters apply.")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Batting**")
-        st.json(stats.batting_summary(ctx.con, pid, f))
-    with c2:
-        st.markdown("**Bowling**")
-        st.json(stats.bowling_summary(ctx.con, pid, f))
-    yearly = stats.runs_by_year(ctx.con, pid, f)
-    if not yearly.empty:
-        st.subheader("Runs by year")
-        st.bar_chart(yearly.set_index("year")["runs"])
-    s1, s2 = st.columns(2)
-    with s1:
-        st.subheader("By innings of the match")
-        st.dataframe(stats.innings_splits(ctx.con, pid, f), hide_index=True)
-    with s2:
-        st.subheader("Home, away and neutral")
-        st.dataframe(stats.home_away_split(ctx.con, pid, f), hide_index=True)
+    other = career["other"]
+    years = f"{int(other.first_year.min())}–{int(other.last_year.max())}" \
+        if other.first_year.notna().all() and other.last_year.notna().all() else None
+    theme.player_card(row.player, row.full_name if pd.notna(row.full_name) else None,
+                      [*other.team.tolist(), *([years] if years else [])])
+    h = stats.career_headline(career)
+    fmt = lambda v, places=0: "-" if v is None else f"{v:,.{places}f}"  # noqa: E731
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Tests", fmt(h["tests"]))
+    c2.metric("Runs", fmt(h["runs"]))
+    c3.metric("Batting avg", fmt(h["batting_average"], 2))
+    c4.metric("Wickets", fmt(h["wickets"]))
+    c5.metric("Bowling avg", fmt(h["bowling_average"], 2))
+    st.subheader("Batting")
+    _career_table(career["batting"], BAT_LABELS, {"average": 2, "strike_rate": 2})
+    st.subheader("Bowling")
+    _career_table(career["bowling"], BOWL_LABELS, {"average": 2, "economy": 2, "strike_rate": 1})
+    st.subheader("Fielding and career span")
+    _career_table(other, OTHER_LABELS)
+    st.caption(
+        "Whole Test career, one row per team. Where every Test is in Cricsheet's ball-by-ball "
+        "data (most players since 2002) every figure is counted from the deliveries. Otherwise "
+        "figures come from Wikipedia's list of the team's Test cricketers, with gaps filled from "
+        "the player's article. A dash means no open source has it: balls faced, fours and sixes "
+        "weren't recorded for most early Tests, and best-in-a-match, 4-wicket innings and "
+        "bowling innings need full scorecards.")
+    st.page_link(PAGES["ask"], label=f"Want splits, venues or opponents? {GURU_TITLE}",
+                 icon=":material/chat:")
 
 
 def coming_soon():
@@ -104,7 +96,7 @@ def coming_soon():
 
 
 def compare(ctx: Ctx):
-    st.title("Compare players")
+    theme.banner("Compare players", "Two players, side by side.")
     coming_soon()
     cols = st.columns(2)
     with cols[0]:
@@ -117,7 +109,7 @@ def compare(ctx: Ctx):
 
 
 def teams(ctx: Ctx):
-    st.title("Teams")
+    theme.banner("Teams", "Records, rivalries and ratings.")
     coming_soon()
     c1, c2 = st.columns(2)
     team = c1.selectbox("Team", ctx.teams, key="team")
@@ -142,7 +134,7 @@ def teams(ctx: Ctx):
 
 
 def leaderboards(ctx: Ctx):
-    st.title("Leaderboards")
+    theme.banner("Leaderboards", "The honours board.")
     coming_soon()
     c1, c2, c3 = st.columns(3)
     kind = c1.radio("Leaderboard", ["All-time careers", "Batting", "Bowling"], horizontal=True)
@@ -168,7 +160,7 @@ def leaderboards(ctx: Ctx):
 
 
 def predict(ctx: Ctx):
-    st.title("Predict")
+    theme.banner("Predictions", "Who wins, who chases it down, who makes runs next.")
     coming_soon()
     m = models()
     st.caption("Probabilities from simple models fitted to past Tests (match results since 1877; "
@@ -228,7 +220,7 @@ def predict(ctx: Ctx):
 
 
 def accuracy(ctx: Ctx):
-    st.title("Model accuracy")
+    theme.banner("Model accuracy", "How often the predictions beat a naive guess.")
     coming_soon()
     m = models()
     st.write("Each model is fitted on older matches and scored on the most recent 20% it never saw. "
@@ -272,7 +264,7 @@ def _show_guru_answer(a: guru.Answer, by_claude: bool):
 
 
 def ask(ctx: Ctx):
-    st.title(GURU_TITLE)
+    theme.banner(GURU_TITLE, "Splits, filters and comparisons: just ask.")
     st.write("Ask about men's Test cricket in plain English. Common questions are read by the site "
              "itself for free; others go to Claude if it is set up. Either way the numbers come from "
              "the same tested stat functions as the rest of the site, and every lookup is shown.")
@@ -334,7 +326,7 @@ def _ask_claude(ctx: Ctx, question: str, history: list):
 
 
 def games(ctx: Ctx):
-    st.title("Games")
+    theme.banner("Games", "Cricket games are in the nets.")
     st.info("Coming in phase 4 of the plan. Every clue and answer comes from a database query, "
             "so the games never state a wrong fact.", icon=":material/construction:")
     for name, how in [
@@ -349,7 +341,7 @@ def games(ctx: Ctx):
 
 
 def about(ctx: Ctx):
-    st.title("About the data")
+    theme.banner("About the data", "Where every number comes from.")
     st.write("**Ball-by-ball** matches come from Cricsheet and support every stat. **Result** matches "
              "come from Wikipedia's season pages and only have teams, venue, date and result, so they "
              "count in team records, head-to-head and the match-result model but not in player stats.")

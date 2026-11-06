@@ -360,6 +360,31 @@ def test_career(con, player_id: str) -> dict[str, pd.DataFrame]:
     return {"batting": pd.DataFrame(bat), "bowling": pd.DataFrame(bowl), "other": pd.DataFrame(other)}
 
 
+def career_headline(career: dict[str, pd.DataFrame]) -> dict:
+    """Whole-career Tests, runs, batting average, wickets and bowling average from `test_career`.
+
+    A player capped by two teams gets their rows added up. With one row the row's averages are
+    used as they are (the list's own average where innings are unknown). With several, the batting
+    average is runs / (innings - not outs) and needs both for every row, and the bowling average
+    is runs conceded / wickets and needs runs for every row; otherwise the average is None.
+    """
+    bat, bowl = career["batting"], career["bowling"]
+    if bat.empty:
+        return {"tests": 0, "runs": None, "batting_average": None, "wickets": None,
+                "bowling_average": None}
+    known = lambda df, *cols: all(_num(v) is not None for c in cols for v in df[c])  # noqa: E731
+    runs = int(bat.runs.sum()) if known(bat, "runs") else None
+    wkts = int(bowl.wickets.sum()) if known(bowl, "wickets") else None
+    if len(bat) == 1:
+        bat_avg, bowl_avg = _num(bat.average.iloc[0]), _num(bowl.average.iloc[0])
+    else:
+        outs = (bat.innings - bat.not_outs).sum() if known(bat, "innings", "not_outs") else None
+        bat_avg = _div(runs, outs)
+        bowl_avg = _div(bowl.runs.sum(), wkts) if known(bowl, "runs") else None
+    return {"tests": int(bat.matches.sum()), "runs": runs, "batting_average": bat_avg,
+            "wickets": wkts, "bowling_average": bowl_avg}
+
+
 CAREER_ORDER = {"runs": "runs DESC", "batting_average": "batting_average DESC",
                 "wickets": "wickets DESC", "bowling_average": "bowling_average ASC",
                 "matches": "matches DESC", "catches": "catches DESC"}

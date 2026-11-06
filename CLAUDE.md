@@ -48,6 +48,10 @@ Cricsheet ball-by-ball data. It is also a learning project for Claude Code featu
   the match/ball being predicted; every model reports held-out metrics against a baseline.
 - `app.py` — Streamlit web app entry and top menu; pages are `app_pages/<name>.py`, each calling
   `ui/views.<name>()`; `ui/common.py` holds the database fetch, cached models and filters.
+  `ui/theme.py` holds the Test cricket look (banners, scoreboard metrics; colours shared with
+  `.streamlit/config.toml`, contrast checked in `tests/test_theme.py`). Use `theme.banner()` for
+  page headings. Player search is a plain career lookup with no filters; filtered questions belong
+  on the Ask page.
   A new page needs a file in `app_pages/`, a view function, an entry in `app.py` and the
   `PAGES` list in `tests/test_app.py`.
 - `.github/workflows/refresh.yml` — nightly rebuild, published as `tests.duckdb` on the
